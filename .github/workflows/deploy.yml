@@ -19,7 +19,7 @@ jobs:
             cat > /home/ubuntu/DevFlow/.env << EOF
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
             GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
-            GITHUB_OWNER=${{ secrets.GITHUB_OWNER }}
+            GITHUB_OWNER=${{ secrets.GH_OWNER }}
             FRONTEND_URL=http://${{ secrets.EC2_HOST }}
             EOF
             chmod 600 /home/ubuntu/DevFlow/.env
