@@ -51,11 +51,17 @@ export default function IssueDetail() {
     loadIssue()
   }, [loadIssue])
 
-  // WebSocket for real-time updates
+  // WebSocket for real-time updates, with polling fallback if WS fails
   useEffect(() => {
     if (!id) return
     const ws = createWebSocket(id)
     wsRef.current = ws
+    let pollInterval = null
+
+    const startPolling = () => {
+      if (pollInterval) return
+      pollInterval = setInterval(loadIssue, 5000)
+    }
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data)
@@ -116,13 +122,14 @@ export default function IssueDetail() {
       }
     }
 
-    ws.onerror = () => {}
-    ws.onclose = () => {}
+    ws.onerror = () => startPolling()
+    ws.onclose = () => startPolling()
 
     return () => {
       ws.close()
+      clearInterval(pollInterval)
     }
-  }, [id])
+  }, [id, loadIssue])
 
   const handleRetry = async () => {
     setRetrying(true)
