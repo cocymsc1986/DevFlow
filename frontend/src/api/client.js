@@ -26,6 +26,6 @@ export const api = {
 export function createWebSocket(issueId) {
   const wsBase = window.location.hostname === 'localhost'
     ? 'ws://localhost:8000'
-    : `ws://${window.location.host}`
+    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
   return new WebSocket(`${wsBase}/ws/${issueId}`)
 }

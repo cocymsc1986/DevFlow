@@ -1,0 +1,30 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            cat > /home/ubuntu/DevFlow/.env << EOF
+            ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+            GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
+            GITHUB_OWNER=${{ secrets.GITHUB_OWNER }}
+            FRONTEND_URL=http://${{ secrets.EC2_HOST }}
+            EOF
+            chmod 600 /home/ubuntu/DevFlow/.env
+            cd /home/ubuntu/DevFlow
+            git pull origin main
+            /home/ubuntu/DevFlow/venv/bin/pip install -q -r backend/requirements.txt
+            cd frontend && npm install --silent && npm run build && cd ..
+            sudo systemctl restart devflow
