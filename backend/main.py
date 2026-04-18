@@ -9,7 +9,7 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -158,7 +158,7 @@ def github_repos():
 
 
 @app.post("/issues", status_code=201)
-async def create_issue(body: IssueCreate, db: Session = Depends(get_db)):
+async def create_issue(body: IssueCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     issue = Issue(
         title=body.title,
         description=body.description,
@@ -184,7 +184,7 @@ async def create_issue(body: IssueCreate, db: Session = Depends(get_db)):
         finally:
             pipeline_db.close()
 
-    asyncio.create_task(run_pipeline())
+    background_tasks.add_task(run_pipeline)
 
     return serialize_issue(issue)
 
@@ -218,7 +218,7 @@ def get_issue(issue_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/issues/{issue_id}/retry")
-async def retry_issue(issue_id: int, db: Session = Depends(get_db)):
+async def retry_issue(issue_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     issue = db.query(Issue).filter(Issue.id == issue_id).first()
     if not issue:
         raise HTTPException(status_code=404, detail="Issue not found")
@@ -240,7 +240,7 @@ async def retry_issue(issue_id: int, db: Session = Depends(get_db)):
         finally:
             pipeline_db.close()
 
-    asyncio.create_task(run_pipeline())
+    background_tasks.add_task(run_pipeline)
     return {"status": "retrying", "issue_id": issue_id}
 
 
