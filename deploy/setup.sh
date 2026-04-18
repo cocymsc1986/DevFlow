@@ -26,5 +26,9 @@ systemctl enable nginx && systemctl restart nginx
 cp "$APP_DIR/deploy/devflow.service" /etc/systemd/system/devflow.service
 systemctl daemon-reload
 systemctl enable devflow
-# Service starts only when .env exists — user creates it after first boot
+
+# Give ubuntu ownership so the deploy workflow (SSH as ubuntu) can write .env and run git
+chown -R ubuntu:ubuntu "$APP_DIR"
+
+# Service starts only when .env exists — written by the first GitHub Actions deploy run
 [ -f "$APP_DIR/.env" ] && systemctl start devflow || true
