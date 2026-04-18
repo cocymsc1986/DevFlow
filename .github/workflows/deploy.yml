@@ -1,0 +1,22 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/ubuntu/DevFlow
+            git pull origin main
+            /home/ubuntu/DevFlow/venv/bin/pip install -q -r backend/requirements.txt
+            cd frontend && npm install --silent && npm run build && cd ..
+            sudo systemctl restart devflow
