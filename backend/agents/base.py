@@ -20,6 +20,7 @@ class BaseAgent:
     name: str = "base"
     label: str = "Base Agent"
     default_model: str = "claude-haiku-4-5-20251001"
+    max_tokens: int = 4096
 
     def __init__(self, model: str = None):
         self.model = model or self.default_model
@@ -51,7 +52,7 @@ class BaseAgent:
 
         response = client.messages.create(
             model=self.model,
-            max_tokens=8192,
+            max_tokens=self.max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
         )

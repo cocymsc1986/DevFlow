@@ -6,13 +6,12 @@ class AssessmentAgent(BaseAgent):
     name = "assessment"
     label = "Assessment & Refinement"
     default_model = "claude-sonnet-4-6"
+    max_tokens = 3072
 
     def get_system_prompt(self) -> str:
-        return """You are an Assessment & Refinement Agent. Your job is to produce a detailed engineering specification from a normalised issue.
+        return """You are an Assessment & Refinement Agent. Produce a concise engineering specification from a normalised issue. Keep all strings brief and direct.
 
-Analyse the intake output and create a thorough technical specification that guides implementation.
-
-You must respond ONLY with valid JSON matching this exact structure:
+Respond ONLY with valid JSON matching this exact structure:
 {
   "refined_title": "string",
   "problem_statement": "string",
@@ -24,12 +23,9 @@ You must respond ONLY with valid JSON matching this exact structure:
   "assumptions_made": ["string"],
   "missing_info": ["string"],
   "estimated_files_changed": 5
-}
-
-Respond ONLY with valid JSON."""
+}"""
 
     def format_input(self, context: dict) -> str:
-        intake = context.get("intake", {})
         return json.dumps({
             "original_issue": {
                 "title": context.get("title"),
@@ -37,5 +33,5 @@ Respond ONLY with valid JSON."""
                 "issue_type": context.get("issue_type"),
                 "has_ui": context.get("has_ui"),
             },
-            "intake_output": intake,
-        }, indent=2)
+            "intake_output": context.get("intake", {}),
+        })

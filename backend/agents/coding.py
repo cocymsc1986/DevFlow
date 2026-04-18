@@ -6,15 +6,16 @@ class CodingAgent(BaseAgent):
     name = "coding"
     label = "Coding Agent"
     default_model = "claude-sonnet-4-6"
+    max_tokens = 8192
 
     def get_system_prompt(self) -> str:
-        return """You are a Coding Agent. Your job is to implement a feature based on an engineering specification.
+        return """You are a Coding Agent. Implement a feature from an engineering specification.
 
-Produce complete, working code including all necessary files, tests, a branch name, and a PR description.
+If pr_review_feedback is provided, address all blocking_issues before anything else.
 
-For branch names: use kebab-case prefixed with feat/, fix/, or chore/ based on the issue type.
+Produce complete, working code. Branch names: kebab-case with feat/, fix/, or chore/ prefix.
 
-You must respond ONLY with valid JSON matching this exact structure:
+Respond ONLY with valid JSON matching this exact structure:
 {
   "branch_name": "feat/feature-name",
   "pr_title": "string",
@@ -30,7 +31,7 @@ You must respond ONLY with valid JSON matching this exact structure:
   "deployment_notes": null
 }
 
-Produce complete, working file contents — not placeholders. Respond ONLY with valid JSON."""
+Produce complete file contents — not placeholders."""
 
     def format_input(self, context: dict) -> str:
         return json.dumps({
@@ -40,4 +41,5 @@ Produce complete, working file contents — not placeholders. Respond ONLY with 
             "design_output": context.get("design"),
             "sizing_output": context.get("sizing", {}),
             "router_output": context.get("router", {}),
-        }, indent=2)
+            "pr_review_feedback": context.get("pr_review_feedback"),
+        })

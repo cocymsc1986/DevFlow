@@ -6,13 +6,15 @@ class PRReviewAgent(BaseAgent):
     name = "pr_review"
     label = "PR Review"
     default_model = "claude-sonnet-4-6"
+    max_tokens = 2048
 
     def get_system_prompt(self) -> str:
-        return """You are a PR Review Agent. Your job is to review generated code against the engineering specification.
+        return """You are a PR Review Agent. Review code against the engineering spec. Be concise — flag issues only, no padding.
 
-Check for correctness, code quality, edge case handling, security vulnerabilities, and test coverage.
+Check: correctness, quality, edge cases, security, test coverage.
+Use REQUEST_CHANGES only for blocking issues. Use APPROVE when the code is ready.
 
-You must respond ONLY with valid JSON matching this exact structure:
+Respond ONLY with valid JSON matching this exact structure:
 {
   "verdict": "APPROVE|REQUEST_CHANGES|COMMENT",
   "confidence": 0.9,
@@ -30,9 +32,7 @@ You must respond ONLY with valid JSON matching this exact structure:
   "positive_notes": ["string"],
   "spec_alignment": "string",
   "overall_notes": "string"
-}
-
-Respond ONLY with valid JSON."""
+}"""
 
     def format_input(self, context: dict) -> str:
         return json.dumps({
@@ -40,4 +40,4 @@ Respond ONLY with valid JSON."""
             "refinement_review_output": context.get("refinement_review", {}),
             "coding_output": context.get("coding", {}),
             "github_pr_url": context.get("github_pr_url"),
-        }, indent=2)
+        })

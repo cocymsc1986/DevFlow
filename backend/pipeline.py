@@ -199,26 +199,48 @@ class Pipeline:
             coding_model = router_output.get("coding_model_id", "claude-sonnet-4-6")
             review_model = router_output.get("review_model_id", "claude-opus-4-7")
 
-            # Step 7 - Coding
-            coding_output = await self._run_agent(issue_id, run, steps["coding"], CodingAgent(model=coding_model), context)
-            if coding_output is None:
-                return await self._fail_pipeline(run, issue, issue_id, "Coding agent failed")
-            context["coding"] = coding_output
+            # Steps 7-8: Coding → GitHub push → PR Review loop (max 2 iterations)
+            MAX_REVIEW_ITERATIONS = 2
+            dynamic_step_num = 10
+            coding_step = steps["coding"]
+            review_step = steps["pr_review"]
+            pr_review_output = None
 
-            # GitHub push (non-fatal)
-            if self.github.is_configured and issue.github_repo:
-                await self._push_to_github(issue, coding_output, issue_id)
+            for iteration in range(1, MAX_REVIEW_ITERATIONS + 1):
+                coding_output = await self._run_agent(issue_id, run, coding_step, CodingAgent(model=coding_model), context)
+                if coding_output is None:
+                    return await self._fail_pipeline(run, issue, issue_id, "Coding agent failed")
+                context["coding"] = coding_output
 
-            context["github_pr_url"] = issue.github_pr_url
-            context["github_branch"] = issue.github_branch
+                # Push code to GitHub — required before review
+                if self.github.is_configured and issue.github_repo:
+                    await self._push_to_github(issue, coding_output, issue_id, update_only=(iteration > 1))
+                context["github_pr_url"] = issue.github_pr_url
+                context["github_branch"] = issue.github_branch
 
-            # Step 8 - PR Review
-            pr_review_output = await self._run_agent(issue_id, run, steps["pr_review"], PRReviewAgent(model=review_model), context)
-            if pr_review_output is None:
-                return await self._fail_pipeline(run, issue, issue_id, "PR Review agent failed")
-            context["pr_review"] = pr_review_output
+                pr_review_output = await self._run_agent(issue_id, run, review_step, PRReviewAgent(model=review_model), context)
+                if pr_review_output is None:
+                    return await self._fail_pipeline(run, issue, issue_id, "PR Review agent failed")
+                context["pr_review"] = pr_review_output
 
-            # Step 9 - Escalation
+                verdict = pr_review_output.get("verdict", "APPROVE")
+                if verdict != "REQUEST_CHANGES" or iteration >= MAX_REVIEW_ITERATIONS:
+                    break
+
+                # Reviewer requested changes — create new steps for revision
+                context["pr_review_feedback"] = pr_review_output
+                coding_step = self._create_step(
+                    run.id, f"coding_rev{iteration + 1}",
+                    f"Coding Agent (revision {iteration + 1})", dynamic_step_num,
+                )
+                dynamic_step_num += 1
+                review_step = self._create_step(
+                    run.id, f"pr_review_rev{iteration + 1}",
+                    f"PR Review (revision {iteration + 1})", dynamic_step_num,
+                )
+                dynamic_step_num += 1
+
+            # Step 9 - Escalation (after PR is open and review cycle is complete)
             escalation_output = await self._run_agent(issue_id, run, steps["escalation"], EscalationAgent(), context)
             if escalation_output is None:
                 return await self._fail_pipeline(run, issue, issue_id, "Escalation agent failed")
@@ -245,14 +267,15 @@ class Pipeline:
 
         return run
 
-    async def _push_to_github(self, issue: Issue, coding_output: dict, issue_id: int):
+    async def _push_to_github(self, issue: Issue, coding_output: dict, issue_id: int, update_only: bool = False):
         try:
             repo = issue.github_repo
             branch_name = coding_output.get("branch_name", f"feat/issue-{issue.id}")
             pr_title = coding_output.get("pr_title", issue.title)
             pr_description = coding_output.get("pr_description", "")
 
-            self.github.create_branch(repo, branch_name)
+            if not update_only:
+                self.github.create_branch(repo, branch_name)
 
             all_files = coding_output.get("files", []) + coding_output.get("test_files", [])
             file_payloads = [
@@ -260,14 +283,15 @@ class Pipeline:
                 for f in all_files if f.get("action") != "delete" and f.get("content")
             ]
 
+            commit_msg = f"fix: address review feedback for {pr_title}" if update_only else f"feat: {pr_title}"
             if file_payloads:
-                self.github.push_files(repo, branch_name, file_payloads, f"feat: {pr_title}")
+                self.github.push_files(repo, branch_name, file_payloads, commit_msg)
 
-            pr = self.github.create_pr(repo, branch_name, pr_title, pr_description)
-
-            issue.github_pr_url = pr.get("url")
-            issue.github_branch = branch_name
-            self.db.commit()
+            if not update_only:
+                pr = self.github.create_pr(repo, branch_name, pr_title, pr_description)
+                issue.github_pr_url = pr.get("url")
+                issue.github_branch = branch_name
+                self.db.commit()
 
         except Exception as e:
             logger.error("GitHub push failed (non-fatal): %s", e)

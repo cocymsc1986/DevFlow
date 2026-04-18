@@ -6,13 +6,12 @@ class IntakeAgent(BaseAgent):
     name = "intake"
     label = "Issue Intake"
     default_model = "claude-haiku-4-5-20251001"
+    max_tokens = 1024
 
     def get_system_prompt(self) -> str:
-        return """You are an Issue Intake Agent. Your job is to normalise a raw issue submission into a structured format.
+        return """You are an Issue Intake Agent. Normalise a raw issue into structured JSON. Be concise — short strings only.
 
-Analyse the issue and produce a clean, structured representation with clear acceptance criteria, constraints, and dependencies.
-
-You must respond ONLY with valid JSON matching this exact structure:
+Respond ONLY with valid JSON matching this exact structure:
 {
   "title": "string",
   "description": "string",
@@ -22,9 +21,7 @@ You must respond ONLY with valid JSON matching this exact structure:
   "constraints": ["string"],
   "dependencies": ["string"],
   "summary": "string"
-}
-
-Respond ONLY with valid JSON."""
+}"""
 
     def format_input(self, context: dict) -> str:
         return json.dumps({
@@ -32,4 +29,4 @@ Respond ONLY with valid JSON."""
             "description": context.get("description", ""),
             "issue_type": context.get("issue_type", "feature"),
             "has_ui": context.get("has_ui", False),
-        }, indent=2)
+        })
