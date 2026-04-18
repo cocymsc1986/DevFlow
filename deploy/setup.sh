@@ -29,6 +29,8 @@ systemctl enable devflow
 
 # Give ubuntu ownership so the deploy workflow (SSH as ubuntu) can write .env and run git
 chown -R ubuntu:ubuntu "$APP_DIR"
+# nginx (www-data) needs execute on /home/ubuntu to traverse into the app directory
+chmod 755 /home/ubuntu
 
 # Service starts only when .env exists — written by the first GitHub Actions deploy run
 [ -f "$APP_DIR/.env" ] && systemctl start devflow || true

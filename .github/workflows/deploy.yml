@@ -17,6 +17,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script: |
             sudo chown -R ubuntu:ubuntu /home/ubuntu/DevFlow
+            sudo chmod 755 /home/ubuntu
             git config --global --add safe.directory /home/ubuntu/DevFlow
             cat > /home/ubuntu/DevFlow/.env << EOF
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
