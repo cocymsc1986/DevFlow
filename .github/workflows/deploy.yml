@@ -12,7 +12,7 @@ jobs:
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
+          host: ${{ vars.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script: |
@@ -22,7 +22,7 @@ jobs:
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
             GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
             GITHUB_OWNER=${{ secrets.GH_OWNER }}
-            FRONTEND_URL=http://${{ secrets.EC2_HOST }}
+            FRONTEND_URL=http://${{ vars.EC2_HOST }}
             EOF
             chmod 600 /home/ubuntu/DevFlow/.env
             cd /home/ubuntu/DevFlow
@@ -30,3 +30,6 @@ jobs:
             /home/ubuntu/DevFlow/venv/bin/pip install -q -r backend/requirements.txt
             cd frontend && npm install --silent && npm run build && cd ..
             sudo systemctl restart devflow
+
+      - name: Print app URL
+        run: echo "Deployed to http://${{ vars.EC2_HOST }}"
