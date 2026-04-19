@@ -1,12 +1,21 @@
 import json
 from .base import BaseAgent
 
+CODING_MAX_TOKENS = {
+    "claude-haiku-4-5-20251001": 8192,
+    "claude-sonnet-4-6": 16384,
+    "claude-opus-4-7": 32768,
+}
+
 
 class CodingAgent(BaseAgent):
     name = "coding"
     label = "Coding Agent"
     default_model = "claude-sonnet-4-6"
-    max_tokens = 16384
+
+    def __init__(self, model: str = None):
+        super().__init__(model)
+        self.max_tokens = CODING_MAX_TOKENS.get(self.model, 16384)
 
     def get_system_prompt(self) -> str:
         return """You are a Coding Agent. Your job is to implement a feature based on an engineering specification.
