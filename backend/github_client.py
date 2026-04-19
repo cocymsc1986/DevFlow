@@ -10,7 +10,9 @@ class GitHubClient:
         token = os.getenv("GITHUB_TOKEN", "")
         self.owner = os.getenv("GITHUB_OWNER", "")
         self._github = Github(token) if token else None
-        self.is_configured = bool(token and self.owner)
+        self.is_configured = bool(token)
+        if token and not self.owner:
+            logger.warning("GITHUB_TOKEN is set but GITHUB_OWNER is not — push/PR will still work but /github/info fallback is disabled")
 
     def list_repos(self) -> list[dict]:
         if not self._github:
@@ -33,11 +35,25 @@ class GitHubClient:
             return []
 
     def _get_repo(self, repo: str):
-        return self._github.get_repo(repo)
+        try:
+            return self._github.get_repo(repo)
+        except GithubException as e:
+            if e.status == 401:
+                raise GithubException(e.status, {"message": "GitHub token is invalid or expired — check GITHUB_TOKEN"}, headers={})
+            if e.status == 403:
+                raise GithubException(e.status, {"message": f"GitHub token lacks permission for repo '{repo}' — ensure the PAT has 'repo' scope"}, headers={})
+            if e.status == 404:
+                raise GithubException(e.status, {"message": f"Repo '{repo}' not found — check the name or token permissions"}, headers={})
+            raise
 
     def create_branch(self, repo: str, name: str, from_branch: str = "main") -> dict:
         gh_repo = self._get_repo(repo)
-        source = gh_repo.get_branch(from_branch)
+        try:
+            source = gh_repo.get_branch(from_branch)
+        except GithubException as e:
+            if e.status == 404:
+                raise GithubException(e.status, {"message": f"Branch '{from_branch}' not found in {repo} — check the repo's default branch"}, headers={})
+            raise
         gh_repo.create_git_ref(ref=f"refs/heads/{name}", sha=source.commit.sha)
         return {"branch": name, "sha": source.commit.sha}
 
