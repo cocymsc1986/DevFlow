@@ -26,6 +26,7 @@ class BaseAgent:
     label: str = "Base Agent"
     default_model: str = "claude-haiku-4-5-20251001"
     max_tokens: int = 8192
+    api_timeout: int = API_TIMEOUT
     allow_truncation: bool = False
 
     def __init__(self, model: str = None):
@@ -64,7 +65,7 @@ class BaseAgent:
                     max_tokens=self.max_tokens,
                     system=system_prompt,
                     messages=[{"role": "user", "content": user_message}],
-                    timeout=API_TIMEOUT,
+                    timeout=self.api_timeout,
                 )
                 break
             except (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.RateLimitError) as e:
