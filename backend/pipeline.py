@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -79,7 +80,7 @@ class Pipeline:
         })
 
         try:
-            result = agent.run(context)
+            result = await agent.run(context)
             output = result["output"]
             self._complete_step(step, result, output)
             await self._emit(issue_id, {
@@ -252,7 +253,7 @@ class Pipeline:
             pr_title = coding_output.get("pr_title", issue.title)
             pr_description = coding_output.get("pr_description", "")
 
-            self.github.create_branch(repo, branch_name)
+            await asyncio.to_thread(self.github.create_branch, repo, branch_name)
 
             all_files = coding_output.get("files", []) + coding_output.get("test_files", [])
             file_payloads = [
@@ -261,9 +262,9 @@ class Pipeline:
             ]
 
             if file_payloads:
-                self.github.push_files(repo, branch_name, file_payloads, f"feat: {pr_title}")
+                await asyncio.to_thread(self.github.push_files, repo, branch_name, file_payloads, f"feat: {pr_title}")
 
-            pr = self.github.create_pr(repo, branch_name, pr_title, pr_description)
+            pr = await asyncio.to_thread(self.github.create_pr, repo, branch_name, pr_title, pr_description)
 
             issue.github_pr_url = pr.get("url")
             issue.github_branch = branch_name
