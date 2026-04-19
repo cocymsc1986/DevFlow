@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { api } from './api/client'
 import IssueList from './components/IssueList'
@@ -11,8 +11,11 @@ function Dashboard() {
   const [showForm, setShowForm] = useState(false)
   const [githubConfigured, setGithubConfigured] = useState(false)
   const [loading, setLoading] = useState(true)
+  const fetchingRef = useRef(false)
 
   const loadIssues = useCallback(async () => {
+    if (fetchingRef.current) return
+    fetchingRef.current = true
     try {
       const data = await api.listIssues()
       setIssues(data)
@@ -20,6 +23,7 @@ function Dashboard() {
       console.error(e)
     } finally {
       setLoading(false)
+      fetchingRef.current = false
     }
   }, [])
 
@@ -28,12 +32,15 @@ function Dashboard() {
     api.health()
       .then(h => setGithubConfigured(h.github_configured))
       .catch(() => {})
-    // Poll for updates every 5s when running issues exist
-    const interval = setInterval(() => {
-      loadIssues()
-    }, 5000)
-    return () => clearInterval(interval)
   }, [loadIssues])
+
+  // Poll only while there are running/pending issues
+  useEffect(() => {
+    const hasActive = issues.some(i => i.status === 'running' || i.status === 'pending')
+    if (!hasActive) return
+    const interval = setInterval(loadIssues, 5000)
+    return () => clearInterval(interval)
+  }, [issues, loadIssues])
 
   const handleCreated = (issue) => {
     setShowForm(false)

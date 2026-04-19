@@ -28,6 +28,7 @@ export default function IssueDetail() {
   const [retrying, setRetrying] = useState(false)
   const wsRef = useRef(null)
   const bottomRef = useRef(null)
+  const fetchingRef = useRef(false)
 
   const getLatestRun = useCallback((iss) => {
     if (!iss?.pipeline_runs?.length) return null
@@ -35,6 +36,8 @@ export default function IssueDetail() {
   }, [])
 
   const loadIssue = useCallback(async () => {
+    if (fetchingRef.current) return
+    fetchingRef.current = true
     try {
       const data = await api.getIssue(id)
       setIssue(data)
@@ -44,6 +47,7 @@ export default function IssueDetail() {
       setError(e.message)
     } finally {
       setLoading(false)
+      fetchingRef.current = false
     }
   }, [id, getLatestRun])
 

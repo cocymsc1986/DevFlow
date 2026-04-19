@@ -9,12 +9,12 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import init_db, get_db, Issue, PipelineRun, AgentStep
+from database import init_db, get_db, SessionLocal, Issue, PipelineRun, AgentStep
 from github_client import GitHubClient
 from pipeline import Pipeline
 
@@ -22,9 +22,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def _resume_interrupted_pipelines():
+    """Re-enqueue any issues that were running when the server last stopped."""
+    db = SessionLocal()
+    try:
+        stuck = db.query(Issue).filter(Issue.status == "running").all()
+        for issue in stuck:
+            logger.info("Resuming interrupted pipeline for issue %s: %s", issue.id, issue.title)
+            issue.status = "pending"
+            db.commit()
+            asyncio.create_task(_run_pipeline_task(issue.id))
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    await _resume_interrupted_pipelines()
     yield
 
 
@@ -54,7 +69,6 @@ class ConnectionManager:
 
     def disconnect(self, issue_id: int, ws: WebSocket):
         if issue_id in self.active:
-            self.active[issue_id].discard(ws) if hasattr(self.active[issue_id], "discard") else None
             try:
                 self.active[issue_id].remove(ws)
             except ValueError:
@@ -66,7 +80,8 @@ class ConnectionManager:
         for ws in connections:
             try:
                 await ws.send_text(json.dumps(event, default=str))
-            except Exception:
+            except Exception as e:
+                logger.debug("WebSocket send failed for issue %s: %s", issue_id, e)
                 dead.append(ws)
         for ws in dead:
             try:
@@ -76,6 +91,18 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+async def _run_pipeline_task(issue_id: int):
+    """Run the pipeline for an issue as a standalone async task."""
+    pipeline_db = SessionLocal()
+    try:
+        pipeline = Pipeline(db=pipeline_db, broadcast=manager.broadcast)
+        await pipeline.run(issue_id)
+    except Exception as e:
+        logger.exception("Pipeline task failed for issue %s: %s", issue_id, e)
+    finally:
+        pipeline_db.close()
 
 
 # Pydantic models
@@ -158,7 +185,7 @@ def github_repos():
 
 
 @app.post("/issues", status_code=201)
-async def create_issue(body: IssueCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def create_issue(body: IssueCreate, db: Session = Depends(get_db)):
     issue = Issue(
         title=body.title,
         description=body.description,
@@ -171,20 +198,7 @@ async def create_issue(body: IssueCreate, background_tasks: BackgroundTasks, db:
     db.commit()
     db.refresh(issue)
 
-    issue_id = issue.id
-
-    async def run_pipeline():
-        from database import SessionLocal
-        pipeline_db = SessionLocal()
-        try:
-            pipeline = Pipeline(db=pipeline_db, broadcast=manager.broadcast)
-            await pipeline.run(issue_id)
-        except Exception as e:
-            logger.exception("Pipeline task failed for issue %s: %s", issue_id, e)
-        finally:
-            pipeline_db.close()
-
-    background_tasks.add_task(run_pipeline)
+    asyncio.create_task(_run_pipeline_task(issue.id))
 
     return serialize_issue(issue)
 
@@ -218,7 +232,7 @@ def get_issue(issue_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/issues/{issue_id}/retry")
-async def retry_issue(issue_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def retry_issue(issue_id: int, db: Session = Depends(get_db)):
     issue = db.query(Issue).filter(Issue.id == issue_id).first()
     if not issue:
         raise HTTPException(status_code=404, detail="Issue not found")
@@ -229,18 +243,7 @@ async def retry_issue(issue_id: int, background_tasks: BackgroundTasks, db: Sess
     issue.updated_at = datetime.utcnow()
     db.commit()
 
-    async def run_pipeline():
-        from database import SessionLocal
-        pipeline_db = SessionLocal()
-        try:
-            pipeline = Pipeline(db=pipeline_db, broadcast=manager.broadcast)
-            await pipeline.run(issue_id)
-        except Exception as e:
-            logger.exception("Retry pipeline failed for issue %s: %s", issue_id, e)
-        finally:
-            pipeline_db.close()
-
-    background_tasks.add_task(run_pipeline)
+    asyncio.create_task(_run_pipeline_task(issue_id))
     return {"status": "retrying", "issue_id": issue_id}
 
 
