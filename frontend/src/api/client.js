@@ -9,6 +9,7 @@ async function request(path, options = {}) {
     const text = await res.text()
     throw new Error(text || `HTTP ${res.status}`)
   }
+  if (res.status === 204) return null
   return res.json()
 }
 
@@ -21,6 +22,8 @@ export const api = {
   getIssue: (id) => request(`/issues/${id}`),
   createIssue: (data) => request('/issues', { method: 'POST', body: JSON.stringify(data) }),
   retryIssue: (id) => request(`/issues/${id}/retry`, { method: 'POST' }),
+  deleteIssue: (id) => request(`/issues/${id}`, { method: 'DELETE' }),
+  rerunIssue: (id) => request(`/issues/${id}/rerun`, { method: 'POST' }),
 }
 
 export function createWebSocket(issueId) {

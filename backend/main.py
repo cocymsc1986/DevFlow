@@ -247,6 +247,35 @@ async def retry_issue(issue_id: int, db: Session = Depends(get_db)):
     return {"status": "retrying", "issue_id": issue_id}
 
 
+@app.delete("/issues/{issue_id}", status_code=204)
+def delete_issue(issue_id: int, db: Session = Depends(get_db)):
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    if issue.status == "running":
+        raise HTTPException(status_code=409, detail="Cannot delete a running issue")
+    db.delete(issue)
+    db.commit()
+
+
+@app.post("/issues/{issue_id}/rerun")
+async def rerun_issue(issue_id: int, db: Session = Depends(get_db)):
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    if issue.status == "running":
+        raise HTTPException(status_code=409, detail="Issue is already running")
+
+    issue.status = "pending"
+    issue.github_pr_url = None
+    issue.github_branch = None
+    issue.updated_at = datetime.utcnow()
+    db.commit()
+
+    asyncio.create_task(_run_pipeline_task(issue_id))
+    return {"status": "rerunning", "issue_id": issue_id}
+
+
 @app.websocket("/ws/{issue_id}")
 async def websocket_endpoint(issue_id: int, ws: WebSocket):
     await manager.connect(issue_id, ws)
