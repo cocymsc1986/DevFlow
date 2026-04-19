@@ -26,6 +26,9 @@ export default function IssueDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [retrying, setRetrying] = useState(false)
+  const [rerunning, setRerunning] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const wsRef = useRef(null)
   const bottomRef = useRef(null)
   const fetchingRef = useRef(false)
@@ -144,6 +147,31 @@ export default function IssueDetail() {
       console.error(e)
     } finally {
       setRetrying(false)
+    }
+  }
+
+  const handleRerun = async () => {
+    setRerunning(true)
+    try {
+      await api.rerunIssue(id)
+      setSteps([])
+      await loadIssue()
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setRerunning(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await api.deleteIssue(id)
+      navigate('/')
+    } catch (e) {
+      console.error(e)
+      setDeleting(false)
+      setShowDeleteConfirm(false)
     }
   }
 
@@ -266,16 +294,63 @@ export default function IssueDetail() {
             </dl>
           </div>
 
-          {/* Retry */}
-          {issue?.status === 'failed' && (
-            <button
-              onClick={handleRetry}
-              disabled={retrying}
-              className="btn-primary w-full disabled:opacity-50"
-            >
-              {retrying ? 'Retrying…' : 'Retry Pipeline'}
-            </button>
-          )}
+          {/* Actions */}
+          <div className="space-y-2">
+            {issue?.status === 'failed' && (
+              <button
+                onClick={handleRetry}
+                disabled={retrying}
+                className="btn-primary w-full disabled:opacity-50"
+              >
+                {retrying ? 'Retrying…' : 'Retry Pipeline'}
+              </button>
+            )}
+
+            {issue?.status !== 'running' && issue?.status !== 'pending' && (
+              <button
+                onClick={handleRerun}
+                disabled={rerunning}
+                className="btn-primary w-full disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {rerunning ? 'Re-running…' : 'Re-run Pipeline'}
+              </button>
+            )}
+
+            {issue?.status !== 'running' && (
+              <>
+                {!showDeleteConfirm ? (
+                  <button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="w-full px-4 py-2 text-sm font-medium rounded-md border border-rose-500/20 text-rose-400 hover:bg-rose-500/10 transition-colors"
+                  >
+                    Delete Issue
+                  </button>
+                ) : (
+                  <div className="panel p-3 border-rose-500/20 space-y-2">
+                    <p className="text-xs text-rose-400">This will permanently delete the issue and all pipeline data.</p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleDelete}
+                        disabled={deleting}
+                        className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-rose-500/20 text-rose-400 hover:bg-rose-500/30 transition-colors disabled:opacity-50"
+                      >
+                        {deleting ? 'Deleting…' : 'Confirm Delete'}
+                      </button>
+                      <button
+                        onClick={() => setShowDeleteConfirm(false)}
+                        className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md border border-white/10 text-text-muted hover:bg-white/5 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
         {/* Right column - Pipeline audit trail */}
