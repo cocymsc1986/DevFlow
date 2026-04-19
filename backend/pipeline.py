@@ -209,6 +209,11 @@ class Pipeline:
             # GitHub push (non-fatal)
             if self.github.is_configured and issue.github_repo:
                 await self._push_to_github(issue, coding_output, issue_id)
+            elif not self.github.is_configured:
+                logger.warning("GitHub not configured — skipping push for issue %s. Set GH_TOKEN env var.", issue_id)
+                await self._emit(issue_id, {"type": "github_skipped", "reason": "GitHub not configured — set GH_TOKEN env var"})
+            elif not issue.github_repo:
+                logger.info("No GitHub repo selected — skipping push for issue %s", issue_id)
 
             context["github_pr_url"] = issue.github_pr_url
             context["github_branch"] = issue.github_branch

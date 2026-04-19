@@ -157,8 +157,8 @@ cd frontend && npm install && npm run dev
 | Variable | Required | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `GITHUB_TOKEN` | No | GitHub PAT for PR creation |
-| `GITHUB_OWNER` | No | GitHub username or org |
+| `GH_TOKEN` | No | GitHub PAT for PR creation |
+| `GH_OWNER` | No | GitHub username or org |
 | `DATABASE_URL` | No | Default: `sqlite:///./devflow.db` |
 | `FRONTEND_URL` | No | Additional CORS origin |
 
