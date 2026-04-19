@@ -1,10 +1,10 @@
 import json
 from .base import BaseAgent
 
-CODING_MAX_TOKENS = {
-    "claude-haiku-4-5-20251001": 8192,
-    "claude-sonnet-4-6": 16384,
-    "claude-opus-4-7": 32768,
+CODING_MODEL_CONFIG = {
+    "claude-haiku-4-5-20251001": {"max_tokens": 8192, "timeout": 300},
+    "claude-sonnet-4-6": {"max_tokens": 16384, "timeout": 600},
+    "claude-opus-4-7": {"max_tokens": 32768, "timeout": 900},
 }
 
 
@@ -15,7 +15,9 @@ class CodingAgent(BaseAgent):
 
     def __init__(self, model: str = None):
         super().__init__(model)
-        self.max_tokens = CODING_MAX_TOKENS.get(self.model, 16384)
+        config = CODING_MODEL_CONFIG.get(self.model, {"max_tokens": 16384, "timeout": 300})
+        self.max_tokens = config["max_tokens"]
+        self.api_timeout = config["timeout"]
 
     def get_system_prompt(self) -> str:
         return """You are a Coding Agent. Your job is to implement a feature based on an engineering specification.

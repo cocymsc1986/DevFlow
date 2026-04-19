@@ -9,9 +9,9 @@ logger = logging.getLogger(__name__)
 
 _client = None
 
-MAX_RETRIES = 3
+MAX_RETRIES = 2
 RETRY_BASE_DELAY = 2
-API_TIMEOUT = 120
+API_TIMEOUT = 300
 
 
 def get_anthropic_client() -> anthropic.AsyncAnthropic:
@@ -26,6 +26,7 @@ class BaseAgent:
     label: str = "Base Agent"
     default_model: str = "claude-haiku-4-5-20251001"
     max_tokens: int = 8192
+    api_timeout: int = API_TIMEOUT
     allow_truncation: bool = False
 
     def __init__(self, model: str = None):
@@ -64,10 +65,15 @@ class BaseAgent:
                     max_tokens=self.max_tokens,
                     system=system_prompt,
                     messages=[{"role": "user", "content": user_message}],
-                    timeout=API_TIMEOUT,
+                    timeout=self.api_timeout,
                 )
                 break
-            except (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.RateLimitError) as e:
+            except anthropic.APITimeoutError:
+                raise RuntimeError(
+                    f"Agent {self.name} timed out after {self.api_timeout}s. "
+                    f"The model took too long to respond. Not retrying to avoid wasting credits."
+                )
+            except (anthropic.APIConnectionError, anthropic.RateLimitError) as e:
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
                     delay = RETRY_BASE_DELAY * (2 ** attempt)
