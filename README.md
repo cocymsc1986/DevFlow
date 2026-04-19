@@ -14,7 +14,7 @@ A fully agentic developer pipeline. Submit an issue, watch 9 AI agents process i
 cd backend
 cp .env.example .env
 # Fill in ANTHROPIC_API_KEY (required)
-# Fill in GITHUB_TOKEN and GITHUB_OWNER (optional — enables PR creation)
+# Fill in GH_TOKEN and GH_OWNER (optional — enables PR creation)
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
@@ -33,8 +33,8 @@ npm run dev
 | Variable | Required | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `GITHUB_TOKEN` | No | GitHub personal access token |
-| `GITHUB_OWNER` | No | GitHub username or org |
+| `GH_TOKEN` | No | GitHub personal access token |
+| `GH_OWNER` | No | GitHub username or org |
 | `DATABASE_URL` | No | SQLite path (default: `sqlite:///./devflow.db`) |
 
 ## Agent Pipeline

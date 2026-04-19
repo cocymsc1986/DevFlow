@@ -7,8 +7,8 @@ logger = logging.getLogger(__name__)
 
 class GitHubClient:
     def __init__(self):
-        token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN", "")
-        self.owner = os.getenv("GITHUB_OWNER") or os.getenv("GH_OWNER", "")
+        token = os.getenv("GH_TOKEN", "")
+        self.owner = os.getenv("GH_OWNER", "")
         self._github = Github(token) if token else None
         self.is_configured = bool(token)
         if token and not self.owner:
@@ -39,7 +39,7 @@ class GitHubClient:
             return self._github.get_repo(repo)
         except GithubException as e:
             if e.status == 401:
-                raise GithubException(e.status, {"message": "GitHub token is invalid or expired — check GITHUB_TOKEN"}, headers={})
+                raise GithubException(e.status, {"message": "GitHub token is invalid or expired — check GH_TOKEN"}, headers={})
             if e.status == 403:
                 raise GithubException(e.status, {"message": f"GitHub token lacks permission for repo '{repo}' — ensure the PAT has 'repo' scope"}, headers={})
             if e.status == 404:
