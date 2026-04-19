@@ -219,7 +219,55 @@ class Pipeline:
                 return await self._fail_pipeline(run, issue, issue_id, "PR Review agent failed")
             context["pr_review"] = pr_review_output
 
-            # Step 9 - Escalation
+            # Review feedback loop: if PR Review requests changes, send back to coding agent
+            MAX_REVISIONS = 2
+            revision = 0
+            next_step_num = 9
+
+            while pr_review_output.get("verdict") == "REQUEST_CHANGES" and revision < MAX_REVISIONS:
+                revision += 1
+                context["revision_number"] = revision
+
+                revision_coding_step = self._create_step(
+                    run.id, f"coding_revision_{revision}",
+                    f"Coding Agent (Revision {revision})", next_step_num,
+                )
+                next_step_num += 1
+
+                coding_output = await self._run_agent(
+                    issue_id, run, revision_coding_step,
+                    CodingAgent(model=coding_model), context,
+                )
+                if coding_output is None:
+                    return await self._fail_pipeline(run, issue, issue_id, f"Coding revision {revision} failed")
+                context["coding"] = coding_output
+
+                if self.github.is_configured and issue.github_repo and issue.github_branch:
+                    await self._update_github_branch(issue, coding_output, issue_id)
+
+                context["github_pr_url"] = issue.github_pr_url
+                context["github_branch"] = issue.github_branch
+
+                revision_review_step = self._create_step(
+                    run.id, f"pr_review_revision_{revision}",
+                    f"PR Review (Revision {revision})", next_step_num,
+                )
+                next_step_num += 1
+
+                pr_review_output = await self._run_agent(
+                    issue_id, run, revision_review_step,
+                    PRReviewAgent(model=review_model), context,
+                )
+                if pr_review_output is None:
+                    return await self._fail_pipeline(run, issue, issue_id, f"PR review revision {revision} failed")
+                context["pr_review"] = pr_review_output
+
+            # Update escalation step number to follow any revision steps
+            if revision > 0:
+                steps["escalation"].step_number = next_step_num
+                self.db.commit()
+
+            # Step 9+ - Escalation
             escalation_output = await self._run_agent(issue_id, run, steps["escalation"], EscalationAgent(), context)
             if escalation_output is None:
                 return await self._fail_pipeline(run, issue, issue_id, "Escalation agent failed")
@@ -272,6 +320,27 @@ class Pipeline:
 
         except Exception as e:
             logger.error("GitHub push failed (non-fatal): %s", e)
+            await self._emit(issue_id, {"type": "github_error", "error": str(e)})
+
+    async def _update_github_branch(self, issue: Issue, coding_output: dict, issue_id: int):
+        try:
+            repo = issue.github_repo
+            branch_name = issue.github_branch
+            pr_title = coding_output.get("pr_title", issue.title)
+
+            all_files = coding_output.get("files", []) + coding_output.get("test_files", [])
+            file_payloads = [
+                {"path": f["path"], "content": f.get("content", "")}
+                for f in all_files if f.get("action") != "delete" and f.get("content")
+            ]
+
+            if file_payloads:
+                await asyncio.to_thread(
+                    self.github.push_files, repo, branch_name, file_payloads,
+                    f"fix: address review feedback - {pr_title}",
+                )
+        except Exception as e:
+            logger.error("GitHub branch update failed (non-fatal): %s", e)
             await self._emit(issue_id, {"type": "github_error", "error": str(e)})
 
     async def _fail_pipeline(self, run: PipelineRun, issue: Issue, issue_id: int, error: str) -> PipelineRun:

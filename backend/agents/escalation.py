@@ -11,6 +11,7 @@ class EscalationAgent(BaseAgent):
         return """You are a Human Escalation Agent. Your job is to summarise the entire pipeline run for a human reviewer.
 
 Produce a clear, concise summary highlighting priority, concerns, and recommended next steps.
+Copy the github_pr_url and github_branch values exactly as provided in the input.
 
 You must respond ONLY with valid JSON matching this exact structure:
 {
@@ -22,7 +23,9 @@ You must respond ONLY with valid JSON matching this exact structure:
   "concerns": ["string"],
   "pipeline_confidence": 0.82,
   "suggested_next_steps": ["string"],
-  "flag_reason": "string"
+  "flag_reason": "string",
+  "github_pr_url": "string or null (copy from input)",
+  "github_branch": "string or null (copy from input)"
 }
 
 Respond ONLY with valid JSON."""
