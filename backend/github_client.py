@@ -7,12 +7,12 @@ logger = logging.getLogger(__name__)
 
 class GitHubClient:
     def __init__(self):
-        token = os.getenv("GITHUB_TOKEN", "")
-        self.owner = os.getenv("GITHUB_OWNER", "")
+        token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN", "")
+        self.owner = os.getenv("GITHUB_OWNER") or os.getenv("GH_OWNER", "")
         self._github = Github(token) if token else None
         self.is_configured = bool(token)
         if token and not self.owner:
-            logger.warning("GITHUB_TOKEN is set but GITHUB_OWNER is not — push/PR will still work but /github/info fallback is disabled")
+            logger.warning("GitHub token is set but owner is not — push/PR will still work but /github/info fallback is disabled")
 
     def list_repos(self) -> list[dict]:
         if not self._github:
