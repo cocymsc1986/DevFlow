@@ -165,15 +165,15 @@ class Pipeline:
                 return await self._fail_pipeline(run, issue, issue_id, "Refinement review agent failed")
             context["refinement_review"] = review_output
 
-            # Step 4 - Design (conditional)
-            has_ui = intake_output.get("has_ui", issue.has_ui)
-            if has_ui:
+            # Step 4 - Design (conditional: only when layout/visual design changes are needed)
+            requires_design = intake_output.get("requires_design_input", False)
+            if requires_design:
                 design_output = await self._run_agent(issue_id, run, steps["design"], DesignAgent(), context)
                 if design_output is None:
                     return await self._fail_pipeline(run, issue, issue_id, "Design agent failed")
                 context["design"] = design_output
             else:
-                reason = "No UI involvement"
+                reason = "No design/layout changes required"
                 self._skip_step(steps["design"], reason)
                 await self._emit(issue_id, {
                     "type": "agent_skipped",

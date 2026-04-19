@@ -6,6 +6,7 @@ class CodingAgent(BaseAgent):
     name = "coding"
     label = "Coding Agent"
     default_model = "claude-sonnet-4-6"
+    max_tokens = 16384
 
     def get_system_prompt(self) -> str:
         return """You are a Coding Agent. Your job is to implement a feature based on an engineering specification.

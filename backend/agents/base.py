@@ -25,6 +25,8 @@ class BaseAgent:
     name: str = "base"
     label: str = "Base Agent"
     default_model: str = "claude-haiku-4-5-20251001"
+    max_tokens: int = 8192
+    allow_truncation: bool = False
 
     def __init__(self, model: str = None):
         self.model = model or self.default_model
@@ -59,7 +61,7 @@ class BaseAgent:
             try:
                 response = await client.messages.create(
                     model=self.model,
-                    max_tokens=8192,
+                    max_tokens=self.max_tokens,
                     system=system_prompt,
                     messages=[{"role": "user", "content": user_message}],
                     timeout=API_TIMEOUT,
@@ -81,6 +83,17 @@ class BaseAgent:
                     last_error = e
                 else:
                     raise
+
+        if response.stop_reason == "max_tokens":
+            if not self.allow_truncation:
+                raise RuntimeError(
+                    f"Agent {self.name} output was truncated (hit max_tokens={self.max_tokens}). "
+                    f"The response is incomplete and cannot be used."
+                )
+            logger.warning(
+                "Agent %s output was truncated (hit max_tokens=%d) but truncation is allowed",
+                self.name, self.max_tokens,
+            )
 
         completed_at = datetime.now(timezone.utc)
         raw_output = response.content[0].text
