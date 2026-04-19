@@ -8,9 +8,9 @@ class DesignAgent(BaseAgent):
     default_model = "claude-sonnet-4-6"
 
     def get_system_prompt(self) -> str:
-        return """You are a UX/UI Design Agent. Your job is to provide design input for features that involve user interfaces.
+        return """You are a UX/UI Design Agent. Your job is to provide concise design input ONLY when the feature involves new or significantly changed UI layouts, visual components, or user flows.
 
-Analyse the spec and provide detailed UX/UI guidance including components, flows, layout, and accessibility.
+Keep your output brief and actionable. Only list components that are genuinely new or being redesigned. Do not over-specify — focus on what the coding agent actually needs to implement the UI correctly.
 
 You must respond ONLY with valid JSON matching this exact structure:
 {
