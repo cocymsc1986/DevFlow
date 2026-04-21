@@ -21,16 +21,23 @@ def get_anthropic_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
+MODEL_MAX_OUTPUT = {
+    "claude-haiku-4-5-20251001": 16_384,
+    "claude-sonnet-4-6": 16_384,
+    "claude-opus-4-7": 32_768,
+}
+
+
 class BaseAgent:
     name: str = "base"
     label: str = "Base Agent"
     default_model: str = "claude-haiku-4-5-20251001"
-    max_tokens: int = 8192
     api_timeout: int = API_TIMEOUT
     allow_truncation: bool = False
 
     def __init__(self, model: str = None):
         self.model = model or self.default_model
+        self.max_tokens = MODEL_MAX_OUTPUT.get(self.model, 8_192)
 
     def get_system_prompt(self) -> str:
         raise NotImplementedError

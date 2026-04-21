@@ -2,9 +2,9 @@ import json
 from .base import BaseAgent
 
 CODING_MODEL_CONFIG = {
-    "claude-haiku-4-5-20251001": {"max_tokens": 8192, "timeout": 300},
-    "claude-sonnet-4-6": {"max_tokens": 16384, "timeout": 600},
-    "claude-opus-4-7": {"max_tokens": 32768, "timeout": 900},
+    "claude-haiku-4-5-20251001": {"max_tokens": 64_000, "timeout": 300},
+    "claude-sonnet-4-6": {"max_tokens": 64_000, "timeout": 600},
+    "claude-opus-4-7": {"max_tokens": 128_000, "timeout": 900},
 }
 
 
@@ -15,7 +15,7 @@ class CodingAgent(BaseAgent):
 
     def __init__(self, model: str = None):
         super().__init__(model)
-        config = CODING_MODEL_CONFIG.get(self.model, {"max_tokens": 16384, "timeout": 300})
+        config = CODING_MODEL_CONFIG.get(self.model, {"max_tokens": 64_000, "timeout": 600})
         self.max_tokens = config["max_tokens"]
         self.api_timeout = config["timeout"]
 

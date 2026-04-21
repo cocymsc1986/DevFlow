@@ -6,6 +6,7 @@ class PRReviewAgent(BaseAgent):
     name = "pr_review"
     label = "PR Review"
     default_model = "claude-sonnet-4-6"
+    api_timeout = 600
 
     def get_system_prompt(self) -> str:
         return """You are a PR Review Agent. Your job is to review generated code against the engineering specification.
