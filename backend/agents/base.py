@@ -40,15 +40,32 @@ class BaseAgent:
 
     def parse_output(self, raw: str) -> dict:
         cleaned = raw.strip()
-        cleaned = re.sub(r"^```json\s*", "", cleaned)
-        cleaned = re.sub(r"^```\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        cleaned = cleaned.strip()
+
+        # Try extracting JSON from a fenced code block first
+        code_block = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?\s*```", cleaned)
+        if code_block:
+            try:
+                return json.loads(code_block.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+
+        # Try the whole response as JSON
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            logger.warning("Agent %s failed to parse JSON, returning raw", self.name)
-            return {"raw": raw}
+            pass
+
+        # Find the outermost {...} and parse that
+        start = cleaned.find('{')
+        end = cleaned.rfind('}')
+        if start != -1 and end > start:
+            try:
+                return json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning("Agent %s failed to parse JSON, returning raw", self.name)
+        return {"raw": raw}
 
     async def run(self, context: dict) -> dict:
         client = get_anthropic_client()

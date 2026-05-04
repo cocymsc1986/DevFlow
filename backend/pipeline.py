@@ -440,8 +440,15 @@ class Pipeline:
                 for f in all_files if f.get("action") != "delete" and f.get("content")
             ]
 
-            if file_payloads:
-                await asyncio.to_thread(self.github.push_files, repo, branch_name, file_payloads, f"feat: {pr_title}")
+            if not file_payloads:
+                raise ValueError(
+                    f"Coding agent produced no file content to push "
+                    f"(files={len(coding_output.get('files', []))}, "
+                    f"test_files={len(coding_output.get('test_files', []))}, "
+                    f"raw_output={'raw' in coding_output})"
+                )
+
+            await asyncio.to_thread(self.github.push_files, repo, branch_name, file_payloads, f"feat: {pr_title}")
 
             pr = await asyncio.to_thread(self.github.create_pr, repo, branch_name, pr_title, pr_description)
 

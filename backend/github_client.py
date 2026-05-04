@@ -84,7 +84,15 @@ class GitHubClient:
     def create_pr(self, repo: str, branch: str, title: str, body: str, base: str = None) -> dict:
         gh_repo = self._get_repo(repo)
         target_base = base or gh_repo.default_branch
-        pr = gh_repo.create_pull(title=title, body=body, head=branch, base=target_base)
+        try:
+            pr = gh_repo.create_pull(title=title, body=body, head=branch, base=target_base)
+        except GithubException as e:
+            if e.status == 422:
+                # PR already exists for this branch — find and return it
+                open_prs = gh_repo.get_pulls(state="open", head=f"{gh_repo.owner.login}:{branch}", base=target_base)
+                for pr in open_prs:
+                    return {"number": pr.number, "url": pr.html_url, "title": pr.title}
+            raise
         return {"number": pr.number, "url": pr.html_url, "title": pr.title}
 
     def add_pr_comment(self, repo: str, pr_number: int, comment: str) -> dict:
