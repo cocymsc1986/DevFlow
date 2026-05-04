@@ -55,7 +55,15 @@ class GitHubClient:
             if e.status == 404:
                 raise GithubException(e.status, {"message": f"Branch '{source_branch}' not found in {repo} — check the repo's default branch"}, headers={})
             raise
-        gh_repo.create_git_ref(ref=f"refs/heads/{name}", sha=source.commit.sha)
+        try:
+            gh_repo.create_git_ref(ref=f"refs/heads/{name}", sha=source.commit.sha)
+        except GithubException as e:
+            if e.status == 422:
+                # Branch already exists (e.g. from a previous run) — reset it to the source tip
+                ref = gh_repo.get_git_ref(f"heads/{name}")
+                ref.edit(sha=source.commit.sha, force=True)
+            else:
+                raise
         return {"branch": name, "sha": source.commit.sha}
 
     def push_files(self, repo: str, branch: str, files: list[dict], commit_message: str) -> dict:
