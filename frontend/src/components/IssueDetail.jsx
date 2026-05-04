@@ -25,7 +25,6 @@ export default function IssueDetail() {
   const [steps, setSteps] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [retrying, setRetrying] = useState(false)
   const [rerunning, setRerunning] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -137,18 +136,6 @@ export default function IssueDetail() {
       clearInterval(pollInterval)
     }
   }, [id, loadIssue])
-
-  const handleRetry = async () => {
-    setRetrying(true)
-    try {
-      await api.retryIssue(id)
-      await loadIssue()
-    } catch (e) {
-      console.error(e)
-    } finally {
-      setRetrying(false)
-    }
-  }
 
   const handleRerun = async () => {
     setRerunning(true)
@@ -296,16 +283,6 @@ export default function IssueDetail() {
 
           {/* Actions */}
           <div className="space-y-2">
-            {issue?.status === 'failed' && (
-              <button
-                onClick={handleRetry}
-                disabled={retrying}
-                className="btn-primary w-full disabled:opacity-50"
-              >
-                {retrying ? 'Retrying…' : 'Retry Pipeline'}
-              </button>
-            )}
-
             {issue?.status !== 'running' && issue?.status !== 'pending' && (
               <button
                 onClick={handleRerun}
