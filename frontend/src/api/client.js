@@ -24,6 +24,7 @@ export const api = {
   retryIssue: (id) => request(`/issues/${id}/retry`, { method: 'POST' }),
   deleteIssue: (id) => request(`/issues/${id}`, { method: 'DELETE' }),
   rerunIssue: (id) => request(`/issues/${id}/rerun`, { method: 'POST' }),
+  retryFromStage: (id, stageName) => request(`/issues/${id}/retry-stage`, { method: 'POST', body: JSON.stringify({ stage_name: stageName }) }),
 }
 
 export function createWebSocket(issueId) {

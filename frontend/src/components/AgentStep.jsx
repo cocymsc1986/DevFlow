@@ -57,7 +57,7 @@ function JsonPanel({ label, data }) {
   )
 }
 
-export default function AgentStep({ step, isLast }) {
+export default function AgentStep({ step, isLast, onRetryFromStage, issueFailed }) {
   const isActive = step.status === 'running'
 
   return (
@@ -106,6 +106,19 @@ export default function AgentStep({ step, isLast }) {
           <div className="mt-2 p-2 bg-rose-500/5 border border-rose-500/20 rounded text-xs text-error font-mono">
             {step.error_message}
           </div>
+        )}
+
+        {/* Retry from this stage */}
+        {step.status === 'failed' && issueFailed && onRetryFromStage && (
+          <button
+            onClick={() => onRetryFromStage(step.agent_name)}
+            className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-amber-500/30 text-accent hover:bg-amber-500/10 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Retry from here
+          </button>
         )}
 
         {/* Skipped reason */}

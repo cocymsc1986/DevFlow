@@ -105,6 +105,18 @@ async def _run_pipeline_task(issue_id: int):
         pipeline_db.close()
 
 
+async def _retry_stage_task(issue_id: int, stage_name: str):
+    """Retry the pipeline for an issue from a specific stage."""
+    pipeline_db = SessionLocal()
+    try:
+        pipeline = Pipeline(db=pipeline_db, broadcast=manager.broadcast)
+        await pipeline.run_from_stage(issue_id, stage_name)
+    except Exception as e:
+        logger.exception("Stage retry task failed for issue %s stage %s: %s", issue_id, stage_name, e)
+    finally:
+        pipeline_db.close()
+
+
 # Pydantic models
 class IssueCreate(BaseModel):
     title: str
@@ -112,6 +124,10 @@ class IssueCreate(BaseModel):
     issue_type: str = "feature"
     has_ui: bool = False
     github_repo: Optional[str] = None
+
+
+class RetryStageBody(BaseModel):
+    stage_name: str
 
 
 def serialize_step(step: AgentStep) -> dict:
@@ -245,6 +261,18 @@ async def retry_issue(issue_id: int, db: Session = Depends(get_db)):
 
     asyncio.create_task(_run_pipeline_task(issue_id))
     return {"status": "retrying", "issue_id": issue_id}
+
+
+@app.post("/issues/{issue_id}/retry-stage")
+async def retry_from_stage(issue_id: int, body: RetryStageBody, db: Session = Depends(get_db)):
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    if issue.status == "running":
+        raise HTTPException(status_code=409, detail="Issue is already running")
+
+    asyncio.create_task(_retry_stage_task(issue_id, body.stage_name))
+    return {"status": "retrying_from_stage", "issue_id": issue_id, "stage_name": body.stage_name}
 
 
 @app.delete("/issues/{issue_id}", status_code=204)
