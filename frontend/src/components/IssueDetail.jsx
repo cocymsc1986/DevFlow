@@ -26,6 +26,7 @@ export default function IssueDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [rerunning, setRerunning] = useState(false)
+  const [retryingStage, setRetryingStage] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [githubError, setGithubError] = useState(null)
@@ -161,6 +162,18 @@ export default function IssueDetail() {
       console.error(e)
     } finally {
       setRerunning(false)
+    }
+  }
+
+  const handleRetryFromStage = async (stageName) => {
+    setRetryingStage(true)
+    try {
+      await api.retryFromStage(id, stageName)
+      await loadIssue()
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setRetryingStage(false)
     }
   }
 
@@ -376,7 +389,13 @@ export default function IssueDetail() {
                 {[...steps]
                   .sort((a, b) => a.step_number - b.step_number)
                   .map((step, i, arr) => (
-                    <AgentStep key={step.id || step.agent_name} step={step} isLast={i === arr.length - 1} />
+                    <AgentStep
+                      key={step.id || step.agent_name}
+                      step={step}
+                      isLast={i === arr.length - 1}
+                      issueFailed={issue?.status === 'failed'}
+                      onRetryFromStage={retryingStage ? null : handleRetryFromStage}
+                    />
                   ))
                 }
               </div>
