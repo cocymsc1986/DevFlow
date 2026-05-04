@@ -28,6 +28,7 @@ export default function IssueDetail() {
   const [rerunning, setRerunning] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [githubError, setGithubError] = useState(null)
   const wsRef = useRef(null)
   const bottomRef = useRef(null)
   const fetchingRef = useRef(false)
@@ -117,6 +118,19 @@ export default function IssueDetail() {
         setSteps(prev => prev.map(s =>
           s.agent_name === msg.agent ? { ...s, status: 'failed', error_message: msg.error } : s
         ))
+      }
+
+      if (msg.type === 'github_push_success') {
+        setIssue(prev => prev ? { ...prev, github_branch: msg.branch, github_pr_url: msg.pr_url } : prev)
+        setGithubError(null)
+      }
+
+      if (msg.type === 'github_error') {
+        setGithubError(msg.error)
+      }
+
+      if (msg.type === 'github_skipped') {
+        setGithubError(msg.reason)
       }
 
       if (msg.type === 'pipeline_complete') {
@@ -232,7 +246,7 @@ export default function IssueDetail() {
           </div>
 
           {/* GitHub info */}
-          {issue?.github_repo && (
+          {issue?.github_repo ? (
             <div className="panel p-4 space-y-3">
               <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider">GitHub</h3>
               <div className="flex items-center gap-2">
@@ -259,8 +273,20 @@ export default function IssueDetail() {
                   </svg>
                 </a>
               )}
+              {githubError && (
+                <div className="mt-2 rounded-md bg-rose-500/10 border border-rose-500/20 px-3 py-2">
+                  <p className="text-xs text-rose-400 font-mono leading-relaxed">GitHub push failed: {githubError}</p>
+                </div>
+              )}
             </div>
-          )}
+          ) : githubError ? (
+            <div className="panel p-4">
+              <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">GitHub</h3>
+              <div className="rounded-md bg-rose-500/10 border border-rose-500/20 px-3 py-2">
+                <p className="text-xs text-rose-400 font-mono leading-relaxed">{githubError}</p>
+              </div>
+            </div>
+          ) : null}
 
           {/* Meta */}
           <div className="panel p-4">

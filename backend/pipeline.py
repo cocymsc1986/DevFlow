@@ -323,6 +323,13 @@ class Pipeline:
             issue.github_branch = branch_name
             self.db.commit()
 
+            await self._emit(issue_id, {
+                "type": "github_push_success",
+                "branch": branch_name,
+                "pr_url": pr.get("url"),
+                "pr_number": pr.get("number"),
+            })
+
         except Exception as e:
             logger.error("GitHub push failed (non-fatal): %s", e)
             await self._emit(issue_id, {"type": "github_error", "error": str(e)})

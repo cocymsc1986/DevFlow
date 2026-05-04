@@ -46,13 +46,14 @@ class GitHubClient:
                 raise GithubException(e.status, {"message": f"Repo '{repo}' not found — check the name or token permissions"}, headers={})
             raise
 
-    def create_branch(self, repo: str, name: str, from_branch: str = "main") -> dict:
+    def create_branch(self, repo: str, name: str, from_branch: str = None) -> dict:
         gh_repo = self._get_repo(repo)
+        source_branch = from_branch or gh_repo.default_branch
         try:
-            source = gh_repo.get_branch(from_branch)
+            source = gh_repo.get_branch(source_branch)
         except GithubException as e:
             if e.status == 404:
-                raise GithubException(e.status, {"message": f"Branch '{from_branch}' not found in {repo} — check the repo's default branch"}, headers={})
+                raise GithubException(e.status, {"message": f"Branch '{source_branch}' not found in {repo} — check the repo's default branch"}, headers={})
             raise
         gh_repo.create_git_ref(ref=f"refs/heads/{name}", sha=source.commit.sha)
         return {"branch": name, "sha": source.commit.sha}
@@ -72,9 +73,10 @@ class GitHubClient:
                 results.append({"path": path, "action": "created"})
         return {"files": results}
 
-    def create_pr(self, repo: str, branch: str, title: str, body: str, base: str = "main") -> dict:
+    def create_pr(self, repo: str, branch: str, title: str, body: str, base: str = None) -> dict:
         gh_repo = self._get_repo(repo)
-        pr = gh_repo.create_pull(title=title, body=body, head=branch, base=base)
+        target_base = base or gh_repo.default_branch
+        pr = gh_repo.create_pull(title=title, body=body, head=branch, base=target_base)
         return {"number": pr.number, "url": pr.html_url, "title": pr.title}
 
     def add_pr_comment(self, repo: str, pr_number: int, comment: str) -> dict:
