@@ -31,6 +31,16 @@ Produce complete, working code including all necessary files, tests, a branch na
 
 For branch names: use kebab-case prefixed with feat/, fix/, or chore/ based on the issue type.
 
+## Code Style Rules
+
+Write clean, minimal code. Specifically:
+- Do NOT add comments unless the WHY is genuinely non-obvious (a hidden constraint, a subtle invariant, a workaround for a known bug)
+- Do NOT explain WHAT the code does — well-named identifiers do that
+- Do NOT add docstrings that restate the function signature or describe obvious behaviour
+- Do NOT add placeholder comments, section headers, or TODO stubs
+- Do NOT add unused imports, dead code, or defensive checks for impossible conditions
+- Keep implementations concise; avoid over-engineering for hypothetical future requirements
+
 You must respond ONLY with valid JSON matching this exact structure:
 {
   "branch_name": "feat/feature-name",

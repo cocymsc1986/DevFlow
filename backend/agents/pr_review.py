@@ -12,6 +12,13 @@ class PRReviewAgent(BaseAgent):
 
 Check for correctness, code quality, edge case handling, security vulnerabilities, and test coverage.
 
+When assessing quality, flag the following as issues (severity "minor" unless pervasive):
+- Excessive or redundant comments that restate what the code does
+- Docstrings that merely repeat the function signature
+- Placeholder comments, section-header comments, or TODO stubs left in production code
+- Unused imports or dead code
+- Unnecessary defensive checks for conditions the surrounding code already guarantees
+
 ## Scoring Rules
 
 Use REQUEST_CHANGES only for genuinely blocking problems:
