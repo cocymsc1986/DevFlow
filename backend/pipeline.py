@@ -333,10 +333,6 @@ class Pipeline:
         db.add(run)
         db.commit()
         db.refresh(run)
-        self._current_trace = create_pipeline_trace(
-            run_id=run.id, issue_id=issue_id, issue_title=issue.title,
-            issue_type=issue.issue_type or "unknown", has_ui=bool(issue.has_ui),
-        )
 
         await self._emit(issue_id, {"type": "pipeline_start", "run_id": run.id, "issue_id": issue_id})
 
@@ -363,6 +359,10 @@ class Pipeline:
         steps = {name: self._create_step(run.id, name, label, num) for name, label, num in steps_config}
 
         try:
+            self._current_trace = create_pipeline_trace(
+                run_id=run.id, issue_id=issue_id, issue_title=issue.title,
+                issue_type=issue.issue_type or "unknown", has_ui=bool(issue.has_ui),
+            )
             success = await self._execute_stages(issue_id, run, issue, steps, context, "intake")
             if success:
                 run.status = "completed"
@@ -451,14 +451,14 @@ class Pipeline:
         latest_run.status = "running"
         latest_run.completed_at = None
         db.commit()
-        self._current_trace = create_pipeline_trace(
-            run_id=latest_run.id, issue_id=issue_id, issue_title=issue.title,
-            issue_type=issue.issue_type or "unknown", has_ui=bool(issue.has_ui),
-        )
 
         await self._emit(issue_id, {"type": "pipeline_start", "run_id": latest_run.id, "issue_id": issue_id})
 
         try:
+            self._current_trace = create_pipeline_trace(
+                run_id=latest_run.id, issue_id=issue_id, issue_title=issue.title,
+                issue_type=issue.issue_type or "unknown", has_ui=bool(issue.has_ui),
+            )
             success = await self._execute_stages(issue_id, latest_run, issue, steps_by_name, context, stage_name)
             if success:
                 latest_run.status = "completed"

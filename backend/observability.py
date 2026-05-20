@@ -19,19 +19,23 @@ def get_langfuse() -> Langfuse:
 
 
 def create_pipeline_trace(run_id: int, issue_id: int, issue_title: str, issue_type: str, has_ui: bool):
-    lf = get_langfuse()
-    return lf.trace(
-        name="devflow-pipeline",
-        session_id=str(run_id),
-        input={"issue_id": issue_id, "title": issue_title},
-        metadata={
-            "issue_id": issue_id,
-            "run_id": run_id,
-            "issue_type": issue_type,
-            "has_ui": has_ui,
-        },
-        tags=[issue_type, "has_ui" if has_ui else "no_ui"],
-    )
+    try:
+        lf = get_langfuse()
+        return lf.trace(
+            name="devflow-pipeline",
+            session_id=str(run_id),
+            input={"issue_id": issue_id, "title": issue_title},
+            metadata={
+                "issue_id": issue_id,
+                "run_id": run_id,
+                "issue_type": issue_type,
+                "has_ui": has_ui,
+            },
+            tags=[issue_type, "has_ui" if has_ui else "no_ui"],
+        )
+    except Exception as e:
+        logger.warning("Langfuse trace creation failed, observability disabled for this run: %s", e)
+        return None
 
 
 def flush_langfuse():
