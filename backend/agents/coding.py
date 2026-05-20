@@ -31,6 +31,29 @@ Produce complete, working code including all necessary files, tests, a branch na
 
 For branch names: use kebab-case prefixed with feat/, fix/, or chore/ based on the issue type.
 
+## Repo Awareness and Pattern Following
+
+If `repo_context` is provided in the input, you MUST study it before writing any code:
+
+1. **Detect the tech stack**: Read package.json, requirements.txt, go.mod, Cargo.toml, etc.
+   to identify the exact language version, frameworks, and libraries — including test libraries.
+
+2. **Follow existing patterns exactly**: Read all provided source and test files. Match:
+   - Import style and ordering conventions
+   - Naming conventions (camelCase, snake_case, PascalCase, file naming, etc.)
+   - File structure and module organisation
+   - How existing tests are structured (which queries, assertions, matchers, and helpers they use)
+   - Error handling and async patterns already established in the codebase
+
+3. **Apply language-appropriate best practices**: Write idiomatic code for the detected stack.
+   Do not impose patterns from other languages or frameworks.
+
+4. **If the repo has a CLAUDE.md, AGENTS.md, or README with conventions**: treat those
+   as authoritative — they override any defaults you would otherwise apply.
+
+5. **When in doubt, copy the style of the nearest existing file** rather than inventing
+   a new style.
+
 ## Code Style Rules
 
 Write clean, minimal code. Specifically:
@@ -67,6 +90,7 @@ Produce complete, working file contents — not placeholders. Respond ONLY with 
             "design_output": context.get("design"),
             "sizing_output": context.get("sizing", {}),
             "router_output": context.get("router", {}),
+            "repo_context": context.get("repo_context"),
         }
 
         if context.get("pr_review"):

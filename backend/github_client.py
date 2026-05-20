@@ -101,6 +101,25 @@ class GitHubClient:
         issue_comment = pr.create_issue_comment(comment)
         return {"comment_id": issue_comment.id}
 
+    def fetch_file(self, repo: str, path: str, ref: str = None) -> dict | None:
+        try:
+            gh_repo = self._get_repo(repo)
+            contents = gh_repo.get_contents(path, ref=ref or gh_repo.default_branch)
+            return {"path": path, "content": contents.decoded_content.decode("utf-8")}
+        except GithubException:
+            return None
+
+    def fetch_repo_context(self, repo: str, extra_paths: list[str] = None) -> dict:
+        orientation = [
+            "README.md", "CLAUDE.md", "AGENTS.md",
+            "package.json", "requirements.txt", "Cargo.toml", "go.mod",
+            ".eslintrc.js", ".eslintrc.json", "eslint.config.js",
+            "tsconfig.json", "pyproject.toml", "setup.cfg",
+        ]
+        paths = orientation + (extra_paths or [])
+        files = [f for p in paths if (f := self.fetch_file(repo, p)) is not None]
+        return {"files": files}
+
     def get_repo_info(self, repo: str = None) -> dict:
         if not self._github:
             return {"configured": False}

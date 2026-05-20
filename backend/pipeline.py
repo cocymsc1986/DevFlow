@@ -236,6 +236,11 @@ class Pipeline:
                 review_model = output.get("review_model_id", "claude-opus-4-7")
 
             elif stage == "coding":
+                assessment_output = context.get("assessment") or {}
+                key_files = assessment_output.get("key_files_to_read", [])
+                context["repo_context"] = await self._fetch_repo_context(
+                    context.get("github_repo"), key_files
+                )
                 output = await self._run_agent(issue_id, run, step, CodingAgent(model=coding_model), context)
                 if output is None:
                     await self._fail_pipeline(run, issue, issue_id, "Coding agent failed")
@@ -480,6 +485,11 @@ class Pipeline:
             await self._fail_pipeline(latest_run, issue, issue_id, str(e))
 
         return latest_run
+
+    async def _fetch_repo_context(self, repo: str, key_files: list[str]) -> dict:
+        if not self.github.is_configured or not repo:
+            return {}
+        return await asyncio.to_thread(self.github.fetch_repo_context, repo, key_files)
 
     async def _push_to_github(self, issue: Issue, coding_output: dict, issue_id: int):
         try:
