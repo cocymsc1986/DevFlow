@@ -55,15 +55,18 @@ class BaseAgent:
         except json.JSONDecodeError:
             pass
 
-        # Find the outermost {...} using balanced brace counting so trailing
-        # text (e.g. a note the model appends) with its own } doesn't truncate the JSON
-        start = cleaned.find('{')
-        if start != -1:
+        # Scan all balanced {...} groups using brace counting, collect valid JSON
+        # candidates, and return the largest one.  Stopping at the first group
+        # fails when the model emits analysis text/JSON before the real output
+        # (more likely when repo_context adds thousands of tokens to the prompt).
+        candidates = []
+        pos = cleaned.find('{')
+        while pos != -1:
             depth = 0
             in_string = False
             escape = False
             end = -1
-            for i in range(start, len(cleaned)):
+            for i in range(pos, len(cleaned)):
                 c = cleaned[i]
                 if escape:
                     escape = False
@@ -83,11 +86,18 @@ class BaseAgent:
                     if depth == 0:
                         end = i
                         break
-            if end != -1:
-                try:
-                    return json.loads(cleaned[start:end + 1])
-                except json.JSONDecodeError:
-                    pass
+            if end == -1:
+                break
+            try:
+                candidates.append((end - pos, json.loads(cleaned[pos:end + 1])))
+            except json.JSONDecodeError:
+                pass
+            pos = cleaned.find('{', end + 1)
+
+        if candidates:
+            # Largest candidate is the real agent output; tiny objects are stray
+            # analysis snippets or notes the model added around the JSON.
+            return max(candidates, key=lambda x: x[0])[1]
 
         logger.warning("Agent %s failed to parse JSON, returning raw", self.name)
         return {"raw": raw}
