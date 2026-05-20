@@ -41,6 +41,8 @@ async def lifespan(app: FastAPI):
     init_db()
     await _resume_interrupted_pipelines()
     yield
+    from observability import flush_langfuse
+    flush_langfuse()
 
 
 app = FastAPI(title="DevFlow", lifespan=lifespan)
