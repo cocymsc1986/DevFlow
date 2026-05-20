@@ -11,8 +11,53 @@ from agents import (
     IntakeAgent, AssessmentAgent, RefinementReviewAgent, DesignAgent,
     SizingAgent, RouterAgent, CodingAgent, PRReviewAgent, EscalationAgent,
 )
+from observability import create_pipeline_trace, get_langfuse
 
 logger = logging.getLogger(__name__)
+
+
+def _finalize_trace(trace, context: dict, issue, run):
+    """Log final pipeline metrics and quality scores to Langfuse."""
+    if trace is None:
+        return
+    pr_review_output = context.get("pr_review") or {}
+    sizing_output = context.get("sizing") or {}
+    final_verdict = pr_review_output.get("verdict", "UNKNOWN")
+    total_tokens = sum(s.tokens_used or 0 for s in run.agent_steps)
+
+    trace.update(
+        output={"verdict": final_verdict, "pr_url": issue.github_pr_url},
+        metadata={
+            "complexity": sizing_output.get("size"),
+            "total_tokens_used": total_tokens,
+            "revision_count": context.get("revision_number", 0),
+            "final_verdict": final_verdict,
+        },
+        tags=[
+            issue.issue_type or "unknown",
+            f"verdict:{final_verdict.lower()}",
+            f"size:{(sizing_output.get('size') or 'unknown').lower()}",
+        ],
+    )
+
+    verdict_map = {"APPROVE": 1.0, "COMMENT": 0.5, "REQUEST_CHANGES": 0.0}
+    for score_name, output_key in [
+        ("correctness", "correctness_score"),
+        ("quality", "quality_score"),
+        ("security", "security_score"),
+        ("test_coverage", "test_coverage_score"),
+    ]:
+        val = pr_review_output.get(output_key)
+        if val is not None:
+            trace.score(name=score_name, value=float(val), data_type="NUMERIC")
+
+    trace.score(
+        name="verdict",
+        value=verdict_map.get(final_verdict, 0.0),
+        data_type="NUMERIC",
+        comment=final_verdict,
+    )
+    get_langfuse().flush()
 
 STAGE_ORDER = [
     "intake", "assessment", "refinement_review", "design",
@@ -25,6 +70,7 @@ class Pipeline:
         self.db = db
         self.broadcast = broadcast or (lambda issue_id, event: None)
         self.github = GitHubClient()
+        self._current_trace = None
 
     async def _emit(self, issue_id: int, event: dict):
         try:
@@ -85,7 +131,7 @@ class Pipeline:
         })
 
         try:
-            result = await agent.run(context)
+            result = await agent.run(context, langfuse_trace=self._current_trace)
             output = result["output"]
             self._complete_step(step, result, output)
             await self._emit(issue_id, {
@@ -287,6 +333,10 @@ class Pipeline:
         db.add(run)
         db.commit()
         db.refresh(run)
+        self._current_trace = create_pipeline_trace(
+            run_id=run.id, issue_id=issue_id, issue_title=issue.title,
+            issue_type=issue.issue_type or "unknown", has_ui=bool(issue.has_ui),
+        )
 
         await self._emit(issue_id, {"type": "pipeline_start", "run_id": run.id, "issue_id": issue_id})
 
@@ -320,6 +370,7 @@ class Pipeline:
                 issue.status = "awaiting_review"
                 issue.updated_at = datetime.now(timezone.utc)
                 db.commit()
+                _finalize_trace(self._current_trace, context, issue, run)
 
                 await self._emit(issue_id, {
                     "type": "pipeline_complete",
@@ -400,6 +451,10 @@ class Pipeline:
         latest_run.status = "running"
         latest_run.completed_at = None
         db.commit()
+        self._current_trace = create_pipeline_trace(
+            run_id=latest_run.id, issue_id=issue_id, issue_title=issue.title,
+            issue_type=issue.issue_type or "unknown", has_ui=bool(issue.has_ui),
+        )
 
         await self._emit(issue_id, {"type": "pipeline_start", "run_id": latest_run.id, "issue_id": issue_id})
 
@@ -411,6 +466,7 @@ class Pipeline:
                 issue.status = "awaiting_review"
                 issue.updated_at = datetime.now(timezone.utc)
                 db.commit()
+                _finalize_trace(self._current_trace, context, issue, latest_run)
 
                 await self._emit(issue_id, {
                     "type": "pipeline_complete",
@@ -500,4 +556,7 @@ class Pipeline:
             "issue_id": issue_id,
             "error": error,
         })
+        if self._current_trace is not None:
+            self._current_trace.update(output={"error": error, "status": "failed"})
+            get_langfuse().flush()
         return run
