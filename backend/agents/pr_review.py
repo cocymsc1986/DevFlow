@@ -31,6 +31,22 @@ Use APPROVE when the code is correct and functional, even if minor improvements 
 
 Only include blocking_issues for items with severity "critical" or "major" that genuinely prevent the code from working correctly or safely.
 
+## Pattern Adherence and Best Practices
+
+If `repo_context` is present in the input:
+
+- Check that the generated code matches the patterns, naming conventions, and idioms
+  visible in the provided existing files.
+- Flag deviations from established patterns as "major" issues if they would confuse
+  maintainers or cause tests to break on refactors.
+- Verify the correct libraries and APIs for the detected tech stack are used — not
+  equivalent APIs from a different framework or language.
+- If a CLAUDE.md or AGENTS.md was provided in repo_context, verify the generated code
+  follows the conventions documented there.
+
+Pattern deviations should be included in `blocking_issues` with severity "major"
+if they affect test correctness or introduce maintainability problems.
+
 ## Revision Review Rules
 
 If revision_number is present in the input, you are reviewing a REVISION that was made to address a previous review.
@@ -72,6 +88,7 @@ Respond ONLY with valid JSON."""
             "refinement_review_output": context.get("refinement_review", {}),
             "coding_output": context.get("coding", {}),
             "github_pr_url": context.get("github_pr_url"),
+            "repo_context": context.get("repo_context"),
         }
 
         revision_number = context.get("revision_number")

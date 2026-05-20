@@ -23,8 +23,11 @@ You must respond ONLY with valid JSON matching this exact structure:
   "definition_of_done": ["string"],
   "assumptions_made": ["string"],
   "missing_info": ["string"],
-  "estimated_files_changed": 5
+  "estimated_files_changed": 5,
+  "key_files_to_read": ["src/components/Foo.tsx", "src/components/__tests__/Foo.test.tsx"]
 }
+
+In `key_files_to_read`, list the specific file paths (relative to repo root) in the target repo that the coding agent should study before writing code: the file(s) it will modify, any related existing test files, and 1-2 nearby files that demonstrate the conventions to follow. These paths are used to fetch actual file contents from the repo.
 
 Respond ONLY with valid JSON."""
 
