@@ -489,7 +489,11 @@ class Pipeline:
     async def _fetch_repo_context(self, repo: str, key_files: list[str]) -> dict:
         if not self.github.is_configured or not repo:
             return {}
-        return await asyncio.to_thread(self.github.fetch_repo_context, repo, key_files)
+        try:
+            return await asyncio.to_thread(self.github.fetch_repo_context, repo, key_files)
+        except Exception as e:
+            logger.warning("Repo context fetch failed (non-fatal): %s", e)
+            return {}
 
     async def _push_to_github(self, issue: Issue, coding_output: dict, issue_id: int):
         try:

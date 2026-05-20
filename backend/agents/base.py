@@ -55,14 +55,39 @@ class BaseAgent:
         except json.JSONDecodeError:
             pass
 
-        # Find the outermost {...} and parse that
+        # Find the outermost {...} using balanced brace counting so trailing
+        # text (e.g. a note the model appends) with its own } doesn't truncate the JSON
         start = cleaned.find('{')
-        end = cleaned.rfind('}')
-        if start != -1 and end > start:
-            try:
-                return json.loads(cleaned[start:end + 1])
-            except json.JSONDecodeError:
-                pass
+        if start != -1:
+            depth = 0
+            in_string = False
+            escape = False
+            end = -1
+            for i in range(start, len(cleaned)):
+                c = cleaned[i]
+                if escape:
+                    escape = False
+                    continue
+                if c == '\\' and in_string:
+                    escape = True
+                    continue
+                if c == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if end != -1:
+                try:
+                    return json.loads(cleaned[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
 
         logger.warning("Agent %s failed to parse JSON, returning raw", self.name)
         return {"raw": raw}
