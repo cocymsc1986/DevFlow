@@ -105,8 +105,10 @@ class GitHubClient:
         try:
             gh_repo = self._get_repo(repo)
             contents = gh_repo.get_contents(path, ref=ref or gh_repo.default_branch)
+            if isinstance(contents, list):
+                return None
             return {"path": path, "content": contents.decoded_content.decode("utf-8")}
-        except GithubException:
+        except Exception:
             return None
 
     def fetch_repo_context(self, repo: str, extra_paths: list[str] = None) -> dict:
@@ -116,8 +118,20 @@ class GitHubClient:
             ".eslintrc.js", ".eslintrc.json", "eslint.config.js",
             "tsconfig.json", "pyproject.toml", "setup.cfg",
         ]
-        paths = orientation + (extra_paths or [])
-        files = [f for p in paths if (f := self.fetch_file(repo, p)) is not None]
+        paths = list(dict.fromkeys(orientation + (extra_paths or [])))
+        try:
+            gh_repo = self._get_repo(repo)
+            ref = gh_repo.default_branch
+        except Exception:
+            return {"files": []}
+        files = []
+        for path in paths:
+            try:
+                contents = gh_repo.get_contents(path, ref=ref)
+                if not isinstance(contents, list):
+                    files.append({"path": path, "content": contents.decoded_content.decode("utf-8")})
+            except Exception:
+                pass
         return {"files": files}
 
     def get_repo_info(self, repo: str = None) -> dict:
