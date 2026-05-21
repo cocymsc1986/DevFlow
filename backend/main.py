@@ -171,6 +171,7 @@ def serialize_issue(issue: Issue, full: bool = False) -> dict:
         "github_repo": issue.github_repo,
         "github_pr_url": issue.github_pr_url,
         "github_branch": issue.github_branch,
+        "github_push_error": issue.github_push_error,
         "created_at": issue.created_at.isoformat() if issue.created_at else None,
         "updated_at": issue.updated_at.isoformat() if issue.updated_at else None,
     }
@@ -258,6 +259,7 @@ async def retry_issue(issue_id: int, db: Session = Depends(get_db)):
     issue.status = "pending"
     issue.github_pr_url = None
     issue.github_branch = None
+    issue.github_push_error = None
     issue.updated_at = datetime.utcnow()
     db.commit()
 
@@ -299,6 +301,7 @@ async def rerun_issue(issue_id: int, db: Session = Depends(get_db)):
     issue.status = "pending"
     issue.github_pr_url = None
     issue.github_branch = None
+    issue.github_push_error = None
     issue.updated_at = datetime.utcnow()
     db.commit()
 

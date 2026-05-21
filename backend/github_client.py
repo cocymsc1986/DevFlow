@@ -74,11 +74,17 @@ class GitHubClient:
             content = f["content"]
             try:
                 existing = gh_repo.get_contents(path, ref=branch)
-                result = gh_repo.update_file(path, commit_message, content, existing.sha, branch=branch)
-                results.append({"path": path, "action": "updated"})
-            except GithubException:
-                result = gh_repo.create_file(path, commit_message, content, branch=branch)
+            except GithubException as e:
+                if e.status == 404:
+                    existing = None
+                else:
+                    raise
+            if existing is None or isinstance(existing, list):
+                gh_repo.create_file(path, commit_message, content, branch=branch)
                 results.append({"path": path, "action": "created"})
+            else:
+                gh_repo.update_file(path, commit_message, content, existing.sha, branch=branch)
+                results.append({"path": path, "action": "updated"})
         return {"files": results}
 
     def create_pr(self, repo: str, branch: str, title: str, body: str, base: str = None) -> dict:

@@ -87,7 +87,9 @@ class BaseAgent:
                         end = i
                         break
             if end == -1:
-                break
+                # No matching close brace — skip this '{' and try the next one
+                pos = cleaned.find('{', pos + 1)
+                continue
             try:
                 candidates.append((end - pos, json.loads(cleaned[pos:end + 1])))
             except json.JSONDecodeError:

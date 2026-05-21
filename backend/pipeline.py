@@ -524,6 +524,7 @@ class Pipeline:
 
             issue.github_pr_url = pr.get("url")
             issue.github_branch = branch_name
+            issue.github_push_error = None
             self.db.commit()
 
             await self._emit(issue_id, {
@@ -534,8 +535,11 @@ class Pipeline:
             })
 
         except Exception as e:
-            logger.error("GitHub push failed (non-fatal): %s", e)
-            await self._emit(issue_id, {"type": "github_error", "error": str(e)})
+            error_msg = str(e)
+            logger.error("GitHub push failed for issue %s: %s", issue_id, error_msg, exc_info=True)
+            issue.github_push_error = error_msg
+            self.db.commit()
+            await self._emit(issue_id, {"type": "github_error", "error": error_msg})
 
     async def _update_github_branch(self, issue: Issue, coding_output: dict, issue_id: int):
         try:

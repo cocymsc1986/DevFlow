@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, event, Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey
+from sqlalchemy import create_engine, event, text, Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./devflow.db")
@@ -34,6 +34,7 @@ class Issue(Base):
     github_repo = Column(String(200), nullable=True)
     github_pr_url = Column(String(500), nullable=True)
     github_branch = Column(String(200), nullable=True)
+    github_push_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -76,6 +77,16 @@ class AgentStep(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Idempotent migration for columns added after initial release
+    with engine.connect() as conn:
+        for ddl in [
+            "ALTER TABLE issues ADD COLUMN github_push_error TEXT",
+        ]:
+            try:
+                conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                pass
 
 
 def get_db():

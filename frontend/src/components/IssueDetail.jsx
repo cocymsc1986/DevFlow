@@ -47,6 +47,9 @@ export default function IssueDetail() {
       setIssue(data)
       const run = getLatestRun(data)
       setSteps(run?.agent_steps || [])
+      if (data.github_push_error) {
+        setGithubError(data.github_push_error)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -154,6 +157,7 @@ export default function IssueDetail() {
 
   const handleRerun = async () => {
     setRerunning(true)
+    setGithubError(null)
     try {
       await api.rerunIssue(id)
       setSteps([])
