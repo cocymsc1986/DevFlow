@@ -45,6 +45,7 @@ export default function IssueDetail() {
     try {
       const data = await api.getIssue(id)
       setIssue(data)
+      setGithubError(data.github_error || null)
       const run = getLatestRun(data)
       setSteps(run?.agent_steps || [])
     } catch (e) {
@@ -122,7 +123,7 @@ export default function IssueDetail() {
       }
 
       if (msg.type === 'github_push_success') {
-        setIssue(prev => prev ? { ...prev, github_branch: msg.branch, github_pr_url: msg.pr_url } : prev)
+        setIssue(prev => prev ? { ...prev, github_branch: msg.branch, github_pr_url: msg.pr_url, github_error: null } : prev)
         setGithubError(null)
       }
 

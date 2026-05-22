@@ -433,6 +433,7 @@ class Pipeline:
         if retry_idx <= coding_idx:
             issue.github_pr_url = None
             issue.github_branch = None
+            issue.github_error = None
 
         context["github_pr_url"] = issue.github_pr_url
         context["github_branch"] = issue.github_branch
@@ -524,6 +525,7 @@ class Pipeline:
 
             issue.github_pr_url = pr.get("url")
             issue.github_branch = branch_name
+            issue.github_error = None
             self.db.commit()
 
             await self._emit(issue_id, {
@@ -535,6 +537,8 @@ class Pipeline:
 
         except Exception as e:
             logger.error("GitHub push failed (non-fatal): %s", e)
+            issue.github_error = str(e)
+            self.db.commit()
             await self._emit(issue_id, {"type": "github_error", "error": str(e)})
 
     async def _update_github_branch(self, issue: Issue, coding_output: dict, issue_id: int):
@@ -554,8 +558,12 @@ class Pipeline:
                     self.github.push_files, repo, branch_name, file_payloads,
                     f"fix: address review feedback - {pr_title}",
                 )
+                issue.github_error = None
+                self.db.commit()
         except Exception as e:
             logger.error("GitHub branch update failed (non-fatal): %s", e)
+            issue.github_error = str(e)
+            self.db.commit()
             await self._emit(issue_id, {"type": "github_error", "error": str(e)})
 
     async def _fail_pipeline(self, run: PipelineRun, issue: Issue, issue_id: int, error: str) -> PipelineRun:
