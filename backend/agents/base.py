@@ -41,25 +41,30 @@ class BaseAgent:
     def parse_output(self, raw: str) -> dict:
         cleaned = raw.strip()
 
-        # Try extracting JSON from a fenced code block first
-        code_block = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?\s*```", cleaned)
-        if code_block:
-            try:
-                return json.loads(code_block.group(1).strip())
-            except json.JSONDecodeError:
-                pass
-
-        # Try the whole response as JSON
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             pass
 
-        # Scan all balanced {...} groups using brace counting, collect valid JSON
-        # candidates, and return the largest one.  Stopping at the first group
-        # fails when the model emits analysis text/JSON before the real output
-        # (more likely when repo_context adds thousands of tokens to the prompt).
-        candidates = []
+        # Collect every candidate JSON object — from fenced code blocks AND
+        # balanced { } groups in the surrounding text — then return the
+        # largest one that parses.  The implementation output (with full file
+        # contents) is always much larger than any analysis snippet the model
+        # may emit before it.  Picking the first fence/group fails when the
+        # model prefaces the real output with an analysis block, which became
+        # more common after repo_context started adding thousands of tokens to
+        # the coding agent prompt.
+        candidates: list[tuple[int, dict]] = []
+
+        for match in re.finditer(r"```(?:json)?\s*\n?([\s\S]*?)\n?\s*```", cleaned):
+            body = match.group(1).strip()
+            try:
+                parsed = json.loads(body)
+                if isinstance(parsed, dict):
+                    candidates.append((len(body), parsed))
+            except json.JSONDecodeError:
+                pass
+
         pos = cleaned.find('{')
         while pos != -1:
             depth = 0
@@ -89,14 +94,14 @@ class BaseAgent:
             if end == -1:
                 break
             try:
-                candidates.append((end - pos, json.loads(cleaned[pos:end + 1])))
+                parsed = json.loads(cleaned[pos:end + 1])
+                if isinstance(parsed, dict):
+                    candidates.append((end - pos, parsed))
             except json.JSONDecodeError:
                 pass
             pos = cleaned.find('{', end + 1)
 
         if candidates:
-            # Largest candidate is the real agent output; tiny objects are stray
-            # analysis snippets or notes the model added around the JSON.
             return max(candidates, key=lambda x: x[0])[1]
 
         logger.warning("Agent %s failed to parse JSON, returning raw", self.name)

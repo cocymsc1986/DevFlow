@@ -106,6 +106,41 @@ def test_multiple_small_objects_then_implementation():
     assert _has_files(result), f"Got keys: {list(result.keys())}"
 
 
+def test_analysis_fence_then_implementation_fence():
+    """Two ```json fences — analysis first, then implementation.
+
+    Regression for the silent PR-creation failure: the regex matched the first
+    fence and returned its small JSON, so the implementation was never seen.
+    """
+    raw = (
+        "Let me analyse the request:\n\n"
+        "```json\n"
+        + json.dumps({"summary": "modify Foo", "confidence": 0.9})
+        + "\n```\n\n"
+        "Now the implementation:\n\n"
+        "```json\n"
+        + json.dumps(IMPL)
+        + "\n```\n"
+    )
+    result = _parse(raw)
+    assert _has_files(result), f"Got keys: {list(result.keys())}"
+    assert result["branch_name"] == "feat/something"
+
+
+def test_two_fences_no_surrounding_text():
+    """Back-to-back ```json fences with no prose between them."""
+    raw = (
+        "```json\n"
+        + json.dumps({"step": 1, "action": "plan"})
+        + "\n```\n\n"
+        "```json\n"
+        + json.dumps(IMPL)
+        + "\n```\n"
+    )
+    result = _parse(raw)
+    assert _has_files(result), f"Got keys: {list(result.keys())}"
+
+
 # ── edge cases ────────────────────────────────────────────────────────────────
 
 def test_file_content_is_json():
