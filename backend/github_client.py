@@ -111,6 +111,22 @@ class GitHubClient:
         except Exception:
             return None
 
+    def fetch_repo_tree(self, repo: str, max_depth: int = 4) -> list[str]:
+        """Fetch the directory tree of a repo (file paths only, up to max_depth)."""
+        try:
+            gh_repo = self._get_repo(repo)
+            tree = gh_repo.get_git_tree(gh_repo.default_branch, recursive=True)
+            paths = []
+            for item in tree.tree:
+                if item.type == "blob":
+                    depth = item.path.count("/")
+                    if depth < max_depth:
+                        paths.append(item.path)
+            return sorted(paths)
+        except Exception as e:
+            logger.warning("Failed to fetch repo tree: %s", e)
+            return []
+
     def fetch_repo_context(self, repo: str, extra_paths: list[str] = None) -> dict:
         orientation = [
             "README.md", "CLAUDE.md", "AGENTS.md",

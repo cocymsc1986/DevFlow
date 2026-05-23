@@ -12,6 +12,15 @@ class RefinementReviewAgent(BaseAgent):
 
 Check for contradictions, scope creep, untestable criteria, and whether the spec is ready for implementation.
 
+## File Path Validation
+
+If `repo_tree` is provided, verify that:
+1. All paths in `key_files_to_read` exist in the repo_tree. Flag any invented/guessed paths.
+2. `key_files_to_modify` contains real existing files — the implementation should modify these,
+   not create new parallel files.
+3. The technical approach describes modifications to existing code where appropriate, rather
+   than creating standalone new modules for features that belong in existing files.
+
 You must respond ONLY with valid JSON matching this exact structure:
 {
   "verdict": "PASS|FAIL",
@@ -28,7 +37,11 @@ You must respond ONLY with valid JSON matching this exact structure:
 Respond ONLY with valid JSON."""
 
     def format_input(self, context: dict) -> str:
-        return json.dumps({
+        data = {
             "intake_output": context.get("intake", {}),
             "assessment_output": context.get("assessment", {}),
-        }, indent=2)
+        }
+        repo_tree = context.get("repo_tree")
+        if repo_tree:
+            data["repo_tree"] = repo_tree
+        return json.dumps(data, indent=2)

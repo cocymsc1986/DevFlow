@@ -31,6 +31,29 @@ Produce complete, working code including all necessary files, tests, a branch na
 
 For branch names: use kebab-case prefixed with feat/, fix/, or chore/ based on the issue type.
 
+## CRITICAL: Integrate Into Existing Code — Do Not Create Parallel Implementations
+
+This is the most important rule. You MUST modify existing files rather than creating new ones
+whenever the feature belongs in an existing module, component, route handler, or service.
+
+1. **Check `key_files_to_modify`** in the assessment output. These are existing files that
+   the spec author identified as needing changes. Use action "modify" for these files and
+   produce the complete updated file content (the original content with your changes applied).
+
+2. **Check `repo_tree`** before creating any new file. If a file already exists at a path
+   where you would create one, you MUST modify the existing file instead.
+
+3. **Only use action "create" when**:
+   - Adding an entirely new module/component that has no existing counterpart
+   - Adding a new test file for code that has no existing tests
+   - Adding config files that don't exist yet
+
+4. **For "modify" actions**: you MUST include the COMPLETE file content — the full original
+   file with your changes integrated. Do NOT produce only the new/changed lines.
+
+5. **When modifying an existing file from repo_context**: start with the exact content from
+   repo_context, then apply your changes to it. Do not rewrite the file from memory.
+
 ## Repo Awareness and Pattern Following
 
 If `repo_context` is provided in the input, you MUST study it before writing any code:
@@ -53,6 +76,21 @@ If `repo_context` is provided in the input, you MUST study it before writing any
 
 5. **When in doubt, copy the style of the nearest existing file** rather than inventing
    a new style.
+
+## Test Writing Rules
+
+When writing tests:
+1. **Use the same test framework** visible in existing test files in repo_context (e.g. pytest,
+   jest, vitest, go test). Never use a different framework.
+2. **Follow existing test patterns**: match the assertion style, fixture usage, setup/teardown
+   patterns, and file naming conventions from existing tests.
+3. **Import correctly**: check how existing tests import from source — relative vs absolute
+   paths, module aliases, etc.
+4. **Test realistic scenarios**: test the actual integration, not just the isolated function.
+   If modifying an existing component, test how the change interacts with the rest.
+5. **If no existing tests exist in repo_context**: use the test framework listed in
+   package.json/requirements.txt/etc. If nothing is listed, use the standard library test
+   framework for the language.
 
 ## Code Style Rules
 
@@ -92,6 +130,9 @@ Produce complete, working file contents — not placeholders. Respond ONLY with 
             "router_output": context.get("router", {}),
             "repo_context": context.get("repo_context"),
         }
+        repo_tree = context.get("repo_tree")
+        if repo_tree:
+            data["repo_tree"] = repo_tree
 
         if context.get("pr_review"):
             data["pr_review_feedback"] = context["pr_review"]

@@ -46,6 +46,7 @@ def _finalize_trace(trace, context: dict, issue, run):
         ("quality", "quality_score"),
         ("security", "security_score"),
         ("test_coverage", "test_coverage_score"),
+        ("integration", "integration_score"),
     ]:
         val = pr_review_output.get(output_key)
         if val is not None:
@@ -185,6 +186,8 @@ class Pipeline:
                 context["intake"] = output
 
             elif stage == "assessment":
+                if "repo_tree" not in context and context.get("github_repo"):
+                    context["repo_tree"] = await self._fetch_repo_tree(context["github_repo"])
                 output = await self._run_agent(issue_id, run, step, AssessmentAgent(), context)
                 if output is None:
                     await self._fail_pipeline(run, issue, issue_id, "Assessment agent failed")
@@ -486,6 +489,15 @@ class Pipeline:
             await self._fail_pipeline(latest_run, issue, issue_id, str(e))
 
         return latest_run
+
+    async def _fetch_repo_tree(self, repo: str) -> list[str]:
+        if not self.github.is_configured or not repo:
+            return []
+        try:
+            return await asyncio.to_thread(self.github.fetch_repo_tree, repo)
+        except Exception as e:
+            logger.warning("Repo tree fetch failed (non-fatal): %s", e)
+            return []
 
     async def _fetch_repo_context(self, repo: str, key_files: list[str]) -> dict:
         if not self.github.is_configured or not repo:

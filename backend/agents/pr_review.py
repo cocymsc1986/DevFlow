@@ -19,12 +19,35 @@ When assessing quality, flag the following as issues (severity "minor" unless pe
 - Unused imports or dead code
 - Unnecessary defensive checks for conditions the surrounding code already guarantees
 
+## CRITICAL: Integration Check
+
+This is the most important review criterion. You MUST verify that the implementation
+integrates into the existing codebase rather than creating parallel/standalone files:
+
+1. **Check action fields**: If the spec identified `key_files_to_modify`, verify the coding
+   output uses action "modify" for those files — not "create". Creating a new file when one
+   already exists is a blocking issue (severity "critical").
+
+2. **Check for orphaned code**: If new files are created, verify they are imported/referenced
+   from existing code. A new module that nothing imports is likely an integration failure.
+
+3. **Check for duplicate functionality**: If `repo_context` shows existing code that handles
+   similar concerns, flag any new files that duplicate rather than extend that code.
+
+4. **Check test integration**: Verify test files import from the correct paths, use the
+   project's actual test framework, and would actually run with the project's test runner.
+
+Include integration failures in `blocking_issues` with severity "critical".
+Set `integration_score` to reflect how well the code integrates (0 = standalone/orphaned,
+10 = seamlessly integrated into existing codebase).
+
 ## Scoring Rules
 
 Use REQUEST_CHANGES only for genuinely blocking problems:
 - Critical bugs, crashes, or security vulnerabilities
 - Missing core functionality from the spec
 - Code that would not compile or run
+- Integration failures (new files that should be modifications to existing files)
 
 Use COMMENT for minor code quality issues, style nits, or suggestions.
 Use APPROVE when the code is correct and functional, even if minor improvements are possible.
@@ -69,6 +92,7 @@ You must respond ONLY with valid JSON matching this exact structure:
   "quality_score": 7,
   "test_coverage_score": 6,
   "security_score": 9,
+  "integration_score": 8,
   "blocking_issues": [
     {"file": "string", "line": "string or null", "issue": "string", "severity": "critical|major|minor"}
   ],
@@ -90,6 +114,9 @@ Respond ONLY with valid JSON."""
             "github_pr_url": context.get("github_pr_url"),
             "repo_context": context.get("repo_context"),
         }
+        repo_tree = context.get("repo_tree")
+        if repo_tree:
+            data["repo_tree"] = repo_tree
 
         revision_number = context.get("revision_number")
         if revision_number:
