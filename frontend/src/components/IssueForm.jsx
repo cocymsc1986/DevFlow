@@ -31,6 +31,10 @@ export default function IssueForm({ onClose, onCreated, githubConfigured }) {
       setError('Title and description are required')
       return
     }
+    if (githubConfigured && !form.github_repo) {
+      setError('Please select a GitHub repository')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
@@ -118,7 +122,7 @@ export default function IssueForm({ onClose, onCreated, githubConfigured }) {
           {/* GitHub repo */}
           {githubConfigured ? (
             <div>
-              <label className="label">GitHub Repo</label>
+              <label className="label">GitHub Repo *</label>
               {reposLoading ? (
                 <div className="input flex items-center gap-2 text-text-muted">
                   <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -128,8 +132,8 @@ export default function IssueForm({ onClose, onCreated, githubConfigured }) {
                   Loading repos…
                 </div>
               ) : (
-                <select className="input" value={form.github_repo} onChange={set('github_repo')}>
-                  <option value="">— No repo (generate only) —</option>
+                <select className="input" value={form.github_repo} onChange={set('github_repo')} required>
+                  <option value="">— Select a repository —</option>
                   {repos.map(r => (
                     <option key={r.full_name} value={r.full_name}>
                       {r.full_name} {r.private ? '(private)' : '(public)'}

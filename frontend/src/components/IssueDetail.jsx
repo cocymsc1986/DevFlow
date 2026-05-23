@@ -27,6 +27,7 @@ export default function IssueDetail() {
   const [error, setError] = useState(null)
   const [rerunning, setRerunning] = useState(false)
   const [retryingStage, setRetryingStage] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [githubError, setGithubError] = useState(null)
@@ -142,6 +143,11 @@ export default function IssueDetail() {
       if (msg.type === 'pipeline_error') {
         setIssue(prev => prev ? { ...prev, status: 'failed' } : prev)
       }
+
+      if (msg.type === 'pipeline_cancelled') {
+        setIssue(prev => prev ? { ...prev, status: 'cancelled' } : prev)
+        setCancelling(false)
+      }
     }
 
     ws.onerror = () => startPolling()
@@ -152,6 +158,16 @@ export default function IssueDetail() {
       clearInterval(pollInterval)
     }
   }, [id, loadIssue])
+
+  const handleCancel = async () => {
+    setCancelling(true)
+    try {
+      await api.cancelIssue(id)
+    } catch (e) {
+      console.error(e)
+      setCancelling(false)
+    }
+  }
 
   const handleRerun = async () => {
     setRerunning(true)
@@ -323,6 +339,19 @@ export default function IssueDetail() {
 
           {/* Actions */}
           <div className="space-y-2">
+            {(issue?.status === 'running' || issue?.status === 'pending') && (
+              <button
+                onClick={handleCancel}
+                disabled={cancelling}
+                className="w-full px-4 py-2 text-sm font-medium rounded-md border border-orange-500/20 text-orange-400 hover:bg-orange-500/10 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                {cancelling ? 'Cancelling…' : 'Cancel Pipeline'}
+              </button>
+            )}
+
             {issue?.status !== 'running' && issue?.status !== 'pending' && (
               <button
                 onClick={handleRerun}

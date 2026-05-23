@@ -31,7 +31,8 @@ async def _resume_interrupted_pipelines():
             logger.info("Resuming interrupted pipeline for issue %s: %s", issue.id, issue.title)
             issue.status = "pending"
             db.commit()
-            asyncio.create_task(_run_pipeline_task(issue.id))
+            task = asyncio.create_task(_run_pipeline_task(issue.id))
+            _running_tasks[issue.id] = task
     finally:
         db.close()
 
@@ -94,6 +95,8 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+_running_tasks: dict[int, asyncio.Task] = {}
+
 
 async def _run_pipeline_task(issue_id: int):
     """Run the pipeline for an issue as a standalone async task."""
@@ -101,9 +104,14 @@ async def _run_pipeline_task(issue_id: int):
     try:
         pipeline = Pipeline(db=pipeline_db, broadcast=manager.broadcast)
         await pipeline.run(issue_id)
+    except asyncio.CancelledError:
+        logger.info("Pipeline task cancelled for issue %s", issue_id)
+        _mark_cancelled(pipeline_db, issue_id)
+        await manager.broadcast(issue_id, {"type": "pipeline_cancelled", "issue_id": issue_id})
     except Exception as e:
         logger.exception("Pipeline task failed for issue %s: %s", issue_id, e)
     finally:
+        _running_tasks.pop(issue_id, None)
         pipeline_db.close()
 
 
@@ -113,10 +121,34 @@ async def _retry_stage_task(issue_id: int, stage_name: str):
     try:
         pipeline = Pipeline(db=pipeline_db, broadcast=manager.broadcast)
         await pipeline.run_from_stage(issue_id, stage_name)
+    except asyncio.CancelledError:
+        logger.info("Stage retry task cancelled for issue %s", issue_id)
+        _mark_cancelled(pipeline_db, issue_id)
+        await manager.broadcast(issue_id, {"type": "pipeline_cancelled", "issue_id": issue_id})
     except Exception as e:
         logger.exception("Stage retry task failed for issue %s stage %s: %s", issue_id, stage_name, e)
     finally:
+        _running_tasks.pop(issue_id, None)
         pipeline_db.close()
+
+
+def _mark_cancelled(db_session, issue_id: int):
+    """Mark an issue and its running pipeline run as cancelled."""
+    issue = db_session.query(Issue).filter(Issue.id == issue_id).first()
+    if issue:
+        issue.status = "cancelled"
+        issue.updated_at = datetime.utcnow()
+    runs = db_session.query(PipelineRun).filter(
+        PipelineRun.issue_id == issue_id, PipelineRun.status == "running"
+    ).all()
+    for run in runs:
+        run.status = "cancelled"
+        run.completed_at = datetime.utcnow()
+        for step in run.agent_steps:
+            if step.status == "running":
+                step.status = "cancelled"
+                step.completed_at = datetime.utcnow()
+    db_session.commit()
 
 
 # Pydantic models
@@ -205,6 +237,9 @@ def github_repos():
 
 @app.post("/issues", status_code=201)
 async def create_issue(body: IssueCreate, db: Session = Depends(get_db)):
+    github = GitHubClient()
+    if github.is_configured and not body.github_repo:
+        raise HTTPException(status_code=422, detail="A GitHub repository must be selected")
     issue = Issue(
         title=body.title,
         description=body.description,
@@ -217,7 +252,8 @@ async def create_issue(body: IssueCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(issue)
 
-    asyncio.create_task(_run_pipeline_task(issue.id))
+    task = asyncio.create_task(_run_pipeline_task(issue.id))
+    _running_tasks[issue.id] = task
 
     return serialize_issue(issue)
 
@@ -263,7 +299,8 @@ async def retry_issue(issue_id: int, db: Session = Depends(get_db)):
     issue.updated_at = datetime.utcnow()
     db.commit()
 
-    asyncio.create_task(_run_pipeline_task(issue_id))
+    task = asyncio.create_task(_run_pipeline_task(issue_id))
+    _running_tasks[issue_id] = task
     return {"status": "retrying", "issue_id": issue_id}
 
 
@@ -275,7 +312,8 @@ async def retry_from_stage(issue_id: int, body: RetryStageBody, db: Session = De
     if issue.status == "running":
         raise HTTPException(status_code=409, detail="Issue is already running")
 
-    asyncio.create_task(_retry_stage_task(issue_id, body.stage_name))
+    task = asyncio.create_task(_retry_stage_task(issue_id, body.stage_name))
+    _running_tasks[issue_id] = task
     return {"status": "retrying_from_stage", "issue_id": issue_id, "stage_name": body.stage_name}
 
 
@@ -305,8 +343,27 @@ async def rerun_issue(issue_id: int, db: Session = Depends(get_db)):
     issue.updated_at = datetime.utcnow()
     db.commit()
 
-    asyncio.create_task(_run_pipeline_task(issue_id))
+    task = asyncio.create_task(_run_pipeline_task(issue_id))
+    _running_tasks[issue_id] = task
     return {"status": "rerunning", "issue_id": issue_id}
+
+
+@app.post("/issues/{issue_id}/cancel")
+async def cancel_issue(issue_id: int, db: Session = Depends(get_db)):
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    if issue.status not in ("running", "pending"):
+        raise HTTPException(status_code=409, detail="Issue is not running")
+
+    task = _running_tasks.get(issue_id)
+    if task and not task.done():
+        task.cancel()
+    else:
+        _mark_cancelled(db, issue_id)
+        await manager.broadcast(issue_id, {"type": "pipeline_cancelled", "issue_id": issue_id})
+
+    return {"status": "cancelled", "issue_id": issue_id}
 
 
 @app.websocket("/ws/{issue_id}")
