@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Optional
 from sqlalchemy.orm import Session
 
@@ -9,9 +11,10 @@ from database import Issue, PipelineRun, AgentStep
 from github_client import GitHubClient
 from agents import (
     IntakeAgent, AssessmentAgent, RefinementReviewAgent, DesignAgent,
-    SizingAgent, CodingAgent, PRReviewAgent, EscalationAgent,
+    SizingAgent, CodingAgent, PRReviewAgent, QAAgent, EscalationAgent,
 )
 from observability import create_pipeline_trace, get_langfuse
+from qa import DockerQARunner, QARunnerError, QARunnerUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +61,32 @@ def _finalize_trace(trace, context: dict, issue, run):
         data_type="NUMERIC",
         comment=final_verdict,
     )
+
+    qa_output = context.get("qa") or {}
+    qa_verdict = qa_output.get("verdict")
+    if qa_verdict:
+        trace.score(
+            name="qa_verdict",
+            value=1.0 if qa_verdict == "QA_PASS" else 0.0,
+            data_type="NUMERIC",
+            comment=qa_verdict,
+        )
+        trace.score(
+            name="qa_findings_count",
+            value=float(len(qa_output.get("findings", []))),
+            data_type="NUMERIC",
+        )
+
     get_langfuse().flush()
 
 STAGE_ORDER = [
     "intake", "assessment", "refinement_review", "design",
-    "sizing", "router", "coding", "pr_review", "escalation",
+    "sizing", "router", "coding", "pr_review", "qa", "escalation",
 ]
+
+QA_ENABLED = os.getenv("QA_ENABLED", "false").lower() in ("1", "true", "yes")
+QA_ARTIFACT_DIR = Path(os.getenv("QA_ARTIFACT_DIR", "./qa_artifacts")).resolve()
+QA_MAX_REVISIONS = 1
 
 _ROUTING_TABLE: dict[str, tuple[str, str]] = {
     "XS": ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"),
@@ -363,6 +386,10 @@ class Pipeline:
                         escalation_step.step_number = next_step_num
                         self.db.commit()
 
+            elif stage == "qa":
+                if not await self._run_qa_stage(issue_id, run, step, issue, context):
+                    return False
+
             elif stage == "escalation":
                 output = await self._run_agent(issue_id, run, step, EscalationAgent(), context)
                 if output is None:
@@ -371,6 +398,171 @@ class Pipeline:
                 context["escalation"] = output
 
         return True
+
+    async def _run_qa_stage(
+        self, issue_id: int, run: PipelineRun, step: AgentStep,
+        issue: Issue, context: dict,
+    ) -> bool:
+        pr_review = context.get("pr_review") or {}
+        skip_reason = None
+        if not QA_ENABLED:
+            skip_reason = "QA stage disabled (set QA_ENABLED=true to enable)"
+        elif pr_review.get("verdict") != "APPROVE":
+            skip_reason = f"Skipped: PR Review verdict was {pr_review.get('verdict', 'unknown')}, not APPROVE"
+        elif not issue.github_repo or not issue.github_branch:
+            skip_reason = "Skipped: no GitHub branch to check out"
+
+        if skip_reason:
+            self._skip_step(step, skip_reason)
+            await self._emit(issue_id, {
+                "type": "agent_skipped",
+                "step_id": step.id,
+                "agent": "qa",
+                "label": step.agent_label,
+                "step_number": step.step_number,
+                "reason": skip_reason,
+            })
+            return True
+
+        run_artifact_dir = QA_ARTIFACT_DIR / f"issue_{issue_id}" / f"step_{step.id}"
+        runner = DockerQARunner(
+            repo=issue.github_repo,
+            branch=issue.github_branch,
+            artifact_dir=run_artifact_dir,
+            github_token=os.getenv("GH_TOKEN"),
+        )
+
+        try:
+            boot_config = await runner.prepare()
+            context["qa_boot"] = boot_config.to_dict()
+
+            await self._emit(issue_id, {
+                "type": "qa_container_starting",
+                "step_id": step.id,
+                "boot": boot_config.to_dict(),
+            })
+            await runner.start()
+            await self._emit(issue_id, {
+                "type": "qa_container_ready",
+                "step_id": step.id,
+                "port": runner.host_port,
+            })
+        except QARunnerUnavailable as e:
+            reason = f"QA runner unavailable: {e}"
+            logger.warning("QA stage infra issue (non-fatal): %s", reason)
+            self._skip_step(step, reason)
+            await self._emit(issue_id, {
+                "type": "agent_skipped",
+                "step_id": step.id,
+                "agent": "qa",
+                "label": step.agent_label,
+                "step_number": step.step_number,
+                "reason": reason,
+            })
+            await runner.stop()
+            return True
+        except QARunnerError as e:
+            logger.error("QA stage prep failed: %s", e)
+            self._fail_step(step, str(e))
+            await self._emit(issue_id, {"type": "agent_error", "step_id": step.id, "agent": "qa", "error": str(e)})
+            await runner.stop()
+            return True
+
+        def emit_event(evt: dict) -> None:
+            evt["step_id"] = step.id
+            asyncio.create_task(self._emit(issue_id, evt))
+
+        try:
+            agent = QAAgent(runner=runner, artifact_run_dir=run_artifact_dir, emit=emit_event)
+            output = await self._run_agent(issue_id, run, step, agent, context)
+            if output is None:
+                await runner.stop()
+                return True
+
+            context["qa"] = output
+
+            if output.get("verdict") == "QA_FAIL":
+                await self._run_qa_revision_loop(issue_id, run, issue, context, output)
+        finally:
+            await runner.stop()
+
+        return True
+
+    async def _run_qa_revision_loop(
+        self, issue_id: int, run: PipelineRun, issue: Issue,
+        context: dict, qa_output: dict,
+    ) -> None:
+        router_output = context.get("router") or {}
+        coding_model = router_output.get("coding_model_id", "claude-sonnet-4-6")
+
+        next_step_num = max(s.step_number for s in run.agent_steps) + 1
+        revision = 0
+
+        while qa_output.get("verdict") == "QA_FAIL" and revision < QA_MAX_REVISIONS:
+            revision += 1
+            context["qa_findings"] = qa_output.get("findings", [])
+            context["qa_summary"] = qa_output.get("summary")
+
+            rev_coding_step = self._create_step(
+                run.id, f"coding_qa_revision_{revision}",
+                f"Coding Agent (QA Revision {revision})", next_step_num,
+            )
+            next_step_num += 1
+
+            coding_output = await self._run_agent(
+                issue_id, run, rev_coding_step,
+                CodingAgent(model=coding_model), context,
+            )
+            if coding_output is None:
+                return
+            context["coding"] = coding_output
+
+            if self.github.is_configured and issue.github_repo and issue.github_branch:
+                await self._update_github_branch(issue, coding_output, issue_id)
+                context["github_pr_url"] = issue.github_pr_url
+                context["github_branch"] = issue.github_branch
+
+            rev_qa_step = self._create_step(
+                run.id, f"qa_revision_{revision}",
+                f"QA Agent (Revision {revision})", next_step_num,
+            )
+            next_step_num += 1
+
+            run_artifact_dir = QA_ARTIFACT_DIR / f"issue_{issue_id}" / f"step_{rev_qa_step.id}"
+            runner = DockerQARunner(
+                repo=issue.github_repo,
+                branch=issue.github_branch,
+                artifact_dir=run_artifact_dir,
+                github_token=os.getenv("GH_TOKEN"),
+            )
+            try:
+                boot_config = await runner.prepare()
+                context["qa_boot"] = boot_config.to_dict()
+                await runner.start()
+            except (QARunnerError, QARunnerUnavailable) as e:
+                self._skip_step(rev_qa_step, f"QA revision skipped: {e}")
+                await self._emit(issue_id, {
+                    "type": "agent_skipped",
+                    "step_id": rev_qa_step.id, "agent": "qa",
+                    "label": rev_qa_step.agent_label,
+                    "step_number": rev_qa_step.step_number, "reason": str(e),
+                })
+                await runner.stop()
+                return
+
+            def emit_event(evt: dict) -> None:
+                evt["step_id"] = rev_qa_step.id
+                asyncio.create_task(self._emit(issue_id, evt))
+
+            try:
+                agent = QAAgent(runner=runner, artifact_run_dir=run_artifact_dir, emit=emit_event)
+                qa_output = await self._run_agent(issue_id, run, rev_qa_step, agent, context)
+            finally:
+                await runner.stop()
+
+            if qa_output is None:
+                return
+            context["qa"] = qa_output
 
     async def run(self, issue_id: int) -> PipelineRun:
         db = self.db
@@ -406,7 +598,8 @@ class Pipeline:
             ("router", "Model Router", 6),
             ("coding", "Coding Agent", 7),
             ("pr_review", "PR Review", 8),
-            ("escalation", "Human Escalation", 9),
+            ("qa", "QA Agent", 9),
+            ("escalation", "Human Escalation", 10),
         ]
 
         steps = {name: self._create_step(run.id, name, label, num) for name, label, num in steps_config}
