@@ -9,7 +9,7 @@ from database import Issue, PipelineRun, AgentStep
 from github_client import GitHubClient
 from agents import (
     IntakeAgent, AssessmentAgent, RefinementReviewAgent, DesignAgent,
-    SizingAgent, RouterAgent, CodingAgent, PRReviewAgent, EscalationAgent,
+    SizingAgent, CodingAgent, PRReviewAgent, EscalationAgent,
 )
 from observability import create_pipeline_trace, get_langfuse
 
@@ -65,6 +65,33 @@ STAGE_ORDER = [
     "sizing", "router", "coding", "pr_review", "escalation",
 ]
 
+_ROUTING_TABLE: dict[str, tuple[str, str]] = {
+    "XS": ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"),
+    "S":  ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"),
+    "M":  ("claude-sonnet-4-6",          "claude-opus-4-7"),
+    "L":  ("claude-sonnet-4-6",          "claude-opus-4-7"),
+    "XL": ("claude-opus-4-7",            "claude-opus-4-7"),
+}
+_TIER_NAMES: dict[str, str] = {
+    "claude-haiku-4-5-20251001": "fast",
+    "claude-sonnet-4-6": "balanced",
+    "claude-opus-4-7": "powerful",
+}
+
+
+def _resolve_models(size: str) -> dict:
+    coding_id, review_id = _ROUTING_TABLE.get(size, ("claude-sonnet-4-6", "claude-opus-4-7"))
+    return {
+        "coding_model": _TIER_NAMES[coding_id],
+        "coding_model_id": coding_id,
+        "review_model": _TIER_NAMES[review_id],
+        "review_model_id": review_id,
+        "routing_reason": (
+            f"Deterministic routing: {size} → "
+            f"{_TIER_NAMES[coding_id]} coding, {_TIER_NAMES[review_id]} review"
+        ),
+    }
+
 
 class Pipeline:
     def __init__(self, db: Session, broadcast: Callable = None):
@@ -119,7 +146,7 @@ class Pipeline:
         self.db.commit()
 
     async def _run_agent(self, issue_id: int, run: PipelineRun, step: AgentStep, agent, context: dict) -> Optional[dict]:
-        step.input_data = json.dumps(context)
+        step.input_data = agent.format_input(context)
         self.db.commit()
 
         self._start_step(step)
@@ -201,6 +228,12 @@ class Pipeline:
                     return False
                 context["refinement_review"] = output
 
+                if not output.get("ready_to_proceed", True):
+                    issues = "; ".join(output.get("issues_found", []) or output.get("recommended_changes", []))
+                    msg = f"Spec not ready for implementation — refinement review blocked: {issues}"
+                    await self._fail_pipeline(run, issue, issue_id, msg)
+                    return False
+
             elif stage == "design":
                 requires_design = intake_output.get("requires_design_input", False)
                 if requires_design:
@@ -230,13 +263,25 @@ class Pipeline:
                 context["sizing"] = output
 
             elif stage == "router":
-                output = await self._run_agent(issue_id, run, step, RouterAgent(), context)
-                if output is None:
-                    await self._fail_pipeline(run, issue, issue_id, "Router agent failed")
-                    return False
+                size = (context.get("sizing") or {}).get("size", "M")
+                output = _resolve_models(size)
                 context["router"] = output
-                coding_model = output.get("coding_model_id", "claude-sonnet-4-6")
-                review_model = output.get("review_model_id", "claude-opus-4-7")
+                coding_model = output["coding_model_id"]
+                review_model = output["review_model_id"]
+                # Store the routing result (not just a skip reason) so run_from_stage can
+                # reconstruct the correct coding/review model IDs from output_data.
+                step.status = "skipped"
+                step.output_data = json.dumps(output)
+                step.completed_at = datetime.now(timezone.utc)
+                self.db.commit()
+                await self._emit(issue_id, {
+                    "type": "agent_skipped",
+                    "step_id": step.id,
+                    "agent": "router",
+                    "label": "Model Router",
+                    "step_number": step.step_number,
+                    "reason": output["routing_reason"],
+                })
 
             elif stage == "coding":
                 assessment_output = context.get("assessment") or {}
