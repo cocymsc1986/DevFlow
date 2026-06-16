@@ -193,10 +193,104 @@ export default function AgentStep({ step, isLast, onRetryFromStage, issueFailed 
           </div>
         )}
 
+        {/* QA stage details */}
+        {(step.agent_name === 'qa' || step.agent_name?.startsWith('qa_revision')) && step.status === 'completed' && step.output_data && (
+          <QaResult output={step.output_data} />
+        )}
+
         {/* JSON panels */}
         <JsonPanel label="Input" data={step.input_data} />
         <JsonPanel label="Output" data={step.output_data} />
       </div>
+    </div>
+  )
+}
+
+function QaResult({ output }) {
+  const findings = output.findings || []
+  const tests = output.tests_written || []
+  const screenshots = output.screenshots || []
+  const verdict = output.verdict
+
+  return (
+    <div className="mt-2 space-y-3">
+      {verdict && (
+        <div className="flex items-center gap-2">
+          <span className={`inline-block text-xs font-mono px-2 py-0.5 rounded border ${
+            verdict === 'QA_PASS'
+              ? 'text-emerald-400 border-emerald-400/20 bg-emerald-400/5'
+              : 'text-rose-400 border-rose-400/20 bg-rose-400/5'
+          }`}>
+            {verdict}
+          </span>
+          {output.tool_calls != null && (
+            <span className="text-xs font-mono text-text-muted">
+              {output.tool_calls} probes · {findings.length} findings
+            </span>
+          )}
+        </div>
+      )}
+
+      {output.summary && (
+        <p className="text-sm text-text-primary leading-relaxed">{output.summary}</p>
+      )}
+
+      {findings.length > 0 && (
+        <div className="space-y-2">
+          {findings.map((f, i) => (
+            <div
+              key={i}
+              className={`p-3 rounded border text-sm ${
+                f.severity === 'critical'
+                  ? 'bg-rose-500/5 border-rose-500/30'
+                  : f.severity === 'major'
+                  ? 'bg-orange-500/5 border-orange-500/30'
+                  : 'bg-amber-500/5 border-amber-500/20'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`text-xs font-mono uppercase ${
+                  f.severity === 'critical' ? 'text-rose-400'
+                  : f.severity === 'major' ? 'text-orange-400'
+                  : 'text-amber-400'
+                }`}>{f.severity}</span>
+                <span className="text-xs font-mono text-text-muted">{f.category}</span>
+                {f.file && (
+                  <span className="text-xs font-mono text-text-muted truncate">{f.file}</span>
+                )}
+              </div>
+              <p className="font-medium text-text-primary mb-1">{f.title}</p>
+              {f.repro && (
+                <p className="text-xs text-text-muted mb-1"><span className="font-semibold">Repro:</span> {f.repro}</p>
+              )}
+              {f.evidence && (
+                <p className="text-xs text-text-muted font-mono whitespace-pre-wrap break-words">{f.evidence}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tests.length > 0 && (
+        <div className="text-xs font-mono text-text-muted">
+          Tests written: {tests.map(t => (
+            <span key={t.name} className={`mr-2 ${t.passed ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {t.name}{t.passed ? ' ✓' : ' ✗'}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {screenshots.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {screenshots.slice(0, 6).map((src, i) => (
+            <a key={i} href={src} target="_blank" rel="noopener noreferrer"
+               className="block w-24 h-16 rounded border border-white/10 bg-bg-overlay text-[10px] text-text-muted font-mono flex items-center justify-center hover:border-accent/40 transition-colors">
+              screenshot {i + 1}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -11,6 +12,7 @@ load_dotenv()
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -364,6 +366,22 @@ async def cancel_issue(issue_id: int, db: Session = Depends(get_db)):
         await manager.broadcast(issue_id, {"type": "pipeline_cancelled", "issue_id": issue_id})
 
     return {"status": "cancelled", "issue_id": issue_id}
+
+
+QA_ARTIFACT_ROOT = Path(os.getenv("QA_ARTIFACT_DIR", "./qa_artifacts")).resolve()
+
+
+@app.get("/artifacts/{issue_id}/{step_id}/{path:path}")
+def get_artifact(issue_id: int, step_id: int, path: str):
+    base = QA_ARTIFACT_ROOT / f"issue_{issue_id}" / f"step_{step_id}"
+    target = (base / path).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return FileResponse(target)
 
 
 @app.websocket("/ws/{issue_id}")

@@ -27,6 +27,12 @@ Address ALL blocking_issues from the review and incorporate relevant suggestions
 Keep the same branch_name and pr_title as the previous implementation.
 Produce complete, updated file contents — not just diffs.
 
+If you receive qa_findings in the input, those are defects observed in a RUNNING instance
+of your code by an adversarial QA agent. Treat them as authoritative — do not argue with
+them, do not claim they are out of scope. Each finding has steps to reproduce; your job is
+to make those reproductions stop producing the defect. Keep the same branch_name and
+pr_title.
+
 Produce complete, working code including all necessary files, tests, a branch name, and a PR description.
 
 For branch names: use kebab-case prefixed with feat/, fix/, or chore/ based on the issue type.
@@ -138,5 +144,10 @@ Produce complete, working file contents — not placeholders. Respond ONLY with 
             data["pr_review_feedback"] = context["pr_review"]
             data["previous_code"] = context.get("coding", {})
             data["revision_number"] = context.get("revision_number", 1)
+
+        if context.get("qa_findings"):
+            data["qa_findings"] = context["qa_findings"]
+            data["qa_summary"] = context.get("qa_summary")
+            data["previous_code"] = context.get("coding", {})
 
         return json.dumps(data, indent=2)
