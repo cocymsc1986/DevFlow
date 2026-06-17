@@ -123,6 +123,14 @@ export default function IssueDetail() {
         ))
       }
 
+      if (msg.type === 'ci_check_update') {
+        setSteps(prev => prev.map(s =>
+          s.agent_name === 'ci_observe' && s.status === 'running'
+            ? { ...s, output_data: { checks: msg.checks, outcome: 'in_progress' } }
+            : s
+        ))
+      }
+
       if (msg.type === 'github_push_success') {
         setIssue(prev => prev ? { ...prev, github_branch: msg.branch, github_pr_url: msg.pr_url, github_error: null } : prev)
         setGithubError(null)

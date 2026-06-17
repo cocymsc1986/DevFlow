@@ -81,8 +81,14 @@ def _finalize_trace(trace, context: dict, issue, run):
 
 STAGE_ORDER = [
     "intake", "assessment", "refinement_review", "design",
-    "sizing", "router", "coding", "pr_review", "qa", "escalation",
+    "sizing", "router", "coding", "ci_observe", "pr_review", "qa", "escalation",
 ]
+
+CI_OBSERVE_ENABLED = os.getenv("CI_OBSERVE_ENABLED", "true").lower() in ("1", "true", "yes")
+CI_OBSERVE_TIMEOUT = int(os.getenv("CI_OBSERVE_TIMEOUT_SECONDS", "600"))
+CI_OBSERVE_POLL_INTERVAL = int(os.getenv("CI_OBSERVE_POLL_SECONDS", "15"))
+CI_MAX_REVISIONS = int(os.getenv("CI_MAX_REVISIONS", "1"))
+_CI_FAILURE_CONCLUSIONS = {"failure", "cancelled", "timed_out", "action_required"}
 
 QA_ENABLED = os.getenv("QA_ENABLED", "false").lower() in ("1", "true", "yes")
 QA_ARTIFACT_DIR = Path(os.getenv("QA_ARTIFACT_DIR", "./qa_artifacts")).resolve()
@@ -334,6 +340,10 @@ class Pipeline:
                 context["github_pr_url"] = issue.github_pr_url
                 context["github_branch"] = issue.github_branch
 
+            elif stage == "ci_observe":
+                if not await self._observe_ci_stage(issue_id, run, step, issue, context):
+                    return False
+
             elif stage == "pr_review":
                 output = await self._run_agent(issue_id, run, step, PRReviewAgent(model=review_model), context)
                 if output is None:
@@ -403,6 +413,170 @@ class Pipeline:
                 context["escalation"] = output
 
         return True
+
+    async def _observe_ci_stage(
+        self, issue_id: int, run: PipelineRun, step: AgentStep,
+        issue: Issue, context: dict,
+    ) -> bool:
+        skip_reason = None
+        if not CI_OBSERVE_ENABLED:
+            skip_reason = "CI observation disabled (set CI_OBSERVE_ENABLED=true to enable)"
+        elif not self.github.is_configured:
+            skip_reason = "GitHub not configured — no CI to observe"
+        elif not issue.github_branch:
+            skip_reason = "No GitHub branch — PR was not created"
+
+        if skip_reason:
+            self._skip_step(step, skip_reason)
+            await self._emit(issue_id, {
+                "type": "agent_skipped",
+                "step_id": step.id, "agent": "ci_observe", "label": step.agent_label,
+                "step_number": step.step_number, "reason": skip_reason,
+            })
+            return True
+
+        self._start_step(step)
+        await self._emit(issue_id, {
+            "type": "agent_start",
+            "step_id": step.id, "agent": "ci_observe",
+            "label": step.agent_label, "step_number": step.step_number,
+        })
+
+        checks, outcome = await self._poll_ci_checks(issue_id, step, issue.github_repo, issue.github_branch)
+
+        result_output = {"checks": checks, "outcome": outcome}
+        if outcome == "failure":
+            result_output["failed_count"] = sum(
+                1 for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS
+            )
+
+        self._complete_step(step, {"output": result_output, "completed_at": datetime.now(timezone.utc)}, result_output)
+        await self._emit(issue_id, {
+            "type": "agent_complete",
+            "step_id": step.id, "agent": "ci_observe", "label": step.agent_label,
+            "step_number": step.step_number, "output": result_output,
+        })
+
+        if outcome == "failure":
+            context["ci_failures"] = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
+            await self._run_ci_revision_loop(issue_id, run, issue, context)
+
+        return True
+
+    async def _poll_ci_checks(
+        self, issue_id: int, step: AgentStep, repo: str, branch: str,
+    ) -> tuple[list[dict], str]:
+        """Poll GitHub check runs until all complete or timeout. Returns (checks, outcome)."""
+        elapsed = 0
+        no_checks_threshold = CI_OBSERVE_POLL_INTERVAL * 2  # two polls with no checks → skip
+
+        while elapsed < CI_OBSERVE_TIMEOUT:
+            await asyncio.sleep(CI_OBSERVE_POLL_INTERVAL)
+            elapsed += CI_OBSERVE_POLL_INTERVAL
+
+            try:
+                sha = await asyncio.to_thread(self.github.get_branch_head_sha, repo, branch)
+                checks = await asyncio.to_thread(self.github.get_check_runs, repo, sha)
+            except Exception as e:
+                logger.warning("CI check poll failed (non-fatal): %s", e)
+                checks = []
+
+            if not checks:
+                if elapsed >= no_checks_threshold:
+                    logger.info("No CI checks found for branch %s after %ds — skipping CI observation", branch, elapsed)
+                    return [], "no_checks"
+                continue
+
+            await self._emit(issue_id, {
+                "type": "ci_check_update",
+                "step_id": step.id,
+                "branch": branch,
+                "checks": checks,
+            })
+
+            pending = [c for c in checks if c.get("status") != "completed"]
+            if pending:
+                continue
+
+            # All completed — classify outcome
+            failed = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
+            if failed:
+                return checks, "failure"
+            return checks, "success"
+
+        logger.warning("CI check observation timed out after %ds for branch %s", CI_OBSERVE_TIMEOUT, branch)
+        try:
+            sha = await asyncio.to_thread(self.github.get_branch_head_sha, repo, branch)
+            checks = await asyncio.to_thread(self.github.get_check_runs, repo, sha)
+        except Exception:
+            checks = []
+        return checks, "timeout"
+
+    async def _run_ci_revision_loop(
+        self, issue_id: int, run: PipelineRun, issue: Issue, context: dict,
+    ) -> None:
+        router_output = context.get("router") or {}
+        coding_model = router_output.get("coding_model_id", "claude-sonnet-4-6")
+
+        next_step_num = max(s.step_number for s in run.agent_steps) + 1
+        revision = 0
+
+        while context.get("ci_failures") and revision < CI_MAX_REVISIONS:
+            revision += 1
+
+            rev_coding_step = self._create_step(
+                run.id, f"coding_ci_revision_{revision}",
+                f"Coding Agent (CI Revision {revision})", next_step_num,
+            )
+            next_step_num += 1
+
+            coding_output = await self._run_agent(
+                issue_id, run, rev_coding_step,
+                CodingAgent(model=coding_model), context,
+            )
+            if coding_output is None:
+                return
+            context["coding"] = coding_output
+
+            if self.github.is_configured and issue.github_repo and issue.github_branch:
+                await self._update_github_branch(issue, coding_output, issue_id)
+                context["github_pr_url"] = issue.github_pr_url
+                context["github_branch"] = issue.github_branch
+
+            rev_ci_step = self._create_step(
+                run.id, f"ci_observe_revision_{revision}",
+                f"CI Observer (Revision {revision})", next_step_num,
+            )
+            next_step_num += 1
+
+            self._start_step(rev_ci_step)
+            await self._emit(issue_id, {
+                "type": "agent_start",
+                "step_id": rev_ci_step.id, "agent": rev_ci_step.agent_name,
+                "label": rev_ci_step.agent_label, "step_number": rev_ci_step.step_number,
+            })
+
+            checks, outcome = await self._poll_ci_checks(
+                issue_id, rev_ci_step, issue.github_repo, issue.github_branch,
+            )
+            result_output = {"checks": checks, "outcome": outcome}
+            if outcome == "failure":
+                result_output["failed_count"] = sum(
+                    1 for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS
+                )
+
+            self._complete_step(rev_ci_step, {"output": result_output, "completed_at": datetime.now(timezone.utc)}, result_output)
+            await self._emit(issue_id, {
+                "type": "agent_complete",
+                "step_id": rev_ci_step.id, "agent": rev_ci_step.agent_name,
+                "label": rev_ci_step.agent_label, "step_number": rev_ci_step.step_number,
+                "output": result_output,
+            })
+
+            if outcome == "failure":
+                context["ci_failures"] = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
+            else:
+                context.pop("ci_failures", None)
 
     async def _run_qa_stage(
         self, issue_id: int, run: PipelineRun, step: AgentStep,
@@ -608,9 +782,10 @@ class Pipeline:
             ("sizing", "Sizing & Estimation", 5),
             ("router", "Model Router", 6),
             ("coding", "Coding Agent", 7),
-            ("pr_review", "PR Review", 8),
-            ("qa", "QA Agent", 9),
-            ("escalation", "Human Escalation", 10),
+            ("ci_observe", "CI Observer", 8),
+            ("pr_review", "PR Review", 9),
+            ("qa", "QA Agent", 10),
+            ("escalation", "Human Escalation", 11),
         ]
 
         steps = {name: self._create_step(run.id, name, label, num) for name, label, num in steps_config}

@@ -33,6 +33,11 @@ them, do not claim they are out of scope. Each finding has steps to reproduce; y
 to make those reproductions stop producing the defect. Keep the same branch_name and
 pr_title.
 
+If you receive ci_failures in the input, those are GitHub Actions CI checks that failed on
+the PR branch. Each entry has a check name, conclusion, and URL. Diagnose the likely cause
+from the check names and your implementation, then fix the code so CI passes. Keep the same
+branch_name and pr_title.
+
 Produce complete, working code including all necessary files, tests, a branch name, and a PR description.
 
 For branch names: use kebab-case prefixed with feat/, fix/, or chore/ based on the issue type.
@@ -149,5 +154,10 @@ Produce complete, working file contents — not placeholders. Respond ONLY with 
             data["qa_findings"] = context["qa_findings"]
             data["qa_summary"] = context.get("qa_summary")
             data["previous_code"] = context.get("coding", {})
+
+        if context.get("ci_failures"):
+            data["ci_failures"] = context["ci_failures"]
+            if "previous_code" not in data:
+                data["previous_code"] = context.get("coding", {})
 
         return json.dumps(data, indent=2)
