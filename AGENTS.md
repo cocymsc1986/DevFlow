@@ -10,8 +10,15 @@ A fully agentic developer pipeline. Users submit issues through a web UI; 9 AI a
 backend/
   main.py              # FastAPI app, all routes, WebSocket manager
   database.py          # SQLAlchemy models: Issue, PipelineRun, AgentStep
-  pipeline.py          # Pipeline orchestration — runs 9 agents sequentially
-  github_client.py     # PyGithub wrapper: branches, file push, PR creation
+  pipeline.py          # Pipeline orchestration — runs agents sequentially
+  github_client.py     # PyGithub wrapper: branches, file push, PR creation, workflow_dispatch
+  qa_callback.py       # HMAC-authenticated /qa/callback endpoint + async coord
+  qa_worker/           # QA agent package — runs in GH Actions, NOT on EC2
+    __main__.py        # CLI entrypoint: python -m qa_worker
+    runner.py          # LocalRunner: subprocess-based, runs on the GH runner
+    boot_detector.py   # Heuristic stack detection (root + backend/frontend/apps/*)
+    agent.py           # QAAgent multi-turn tool loop
+    callback.py        # HMAC-signed POST helper for events back to DevFlow
   agents/
     __init__.py         # Re-exports all agent classes
     base.py             # BaseAgent: Anthropic API call, retry, JSON parse
@@ -23,9 +30,13 @@ backend/
     router.py           # Step 6 — pick models for coding/review (Haiku)
     coding.py           # Step 7 — full implementation (router-selected)
     pr_review.py        # Step 8 — code review, may REQUEST_CHANGES (router-selected)
-    escalation.py       # Step 9 — human-readable summary (Haiku)
+    escalation.py       # Step 10 — human-readable summary (Haiku)
   requirements.txt
   .env.example
+
+.github/workflows/
+  deploy.yml           # Push to EC2 via SSH on push to main
+  qa.yml               # workflow_dispatch — boots target PR branch, runs qa_worker, posts back
 
 frontend/
   src/
@@ -157,10 +168,39 @@ cd frontend && npm install && npm run dev
 | Variable | Required | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `GH_TOKEN` | No | GitHub PAT for PR creation |
+| `GH_TOKEN` | No | GitHub PAT for PR creation + workflow_dispatch |
 | `GH_OWNER` | No | GitHub username or org |
 | `DATABASE_URL` | No | Default: `sqlite:///./devflow.db` |
 | `FRONTEND_URL` | No | Additional CORS origin |
+| `QA_ENABLED` | No | Set `true` to run the QA stage |
+| `QA_WORKFLOW_REPO` | If QA enabled | `owner/name` of repo hosting `qa.yml` (this one) |
+| `QA_CALLBACK_SECRET` | If QA enabled | HMAC secret — must match the GH Actions secret |
+| `PUBLIC_BASE_URL` | If QA enabled | Public URL the GH runner reaches DevFlow on |
+
+## QA Architecture
+
+The QA stage is the only agent that runs **off** the EC2 control plane. The
+worker is dispatched as a GitHub Actions `workflow_dispatch` event:
+
+```
+EC2 (pipeline)
+  └─ GitHubClient.dispatch_workflow(qa.yml, inputs)
+        │
+        ▼
+  GH Actions runner (ubuntu-latest, 30 min cap)
+    ├─ checkout cocymsc1986/devflow @ main         → devflow/
+    ├─ checkout target_repo @ target_branch        → target/  (persist-credentials: false)
+    ├─ python -m qa_worker --source-dir target …
+    │     ├─ detect boot config (backend/ → frontend/ → apps/*)
+    │     ├─ run setup_cmds, boot app, health probe
+    │     ├─ QAAgent multi-turn loop (read_file/bash/http/playwright/record_finding)
+    │     └─ POST each event → DevFlow /qa/callback/{step_id}  (HMAC-signed)
+    └─ upload qa_artifacts/ (Playwright traces, app log) as artifact (7d retention)
+```
+
+Pipeline awaits an `asyncio.Event` keyed by `step_id`; the callback handler
+sets it on `qa_complete`. Hard timeout `QA_WORKFLOW_TIMEOUT_SECONDS` (default
+35 min, > the workflow's own 30 min cap).
 
 ## Conventions
 

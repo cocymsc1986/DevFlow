@@ -1,13 +1,14 @@
+import asyncio
+import hashlib
+import hmac
 import json
-import os
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from qa.boot_detector import detect_boot_config
-from qa.runner import DockerQARunner, ExecResult, QARunnerError
+from qa_worker.boot_detector import detect_boot_config
+from qa_worker.runner import LocalRunner, QARunnerError
+from qa_worker.callback import CallbackClient
 
 
 @pytest.fixture
@@ -29,12 +30,27 @@ def temp_repo_python(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def temp_repo_monorepo(tmp_path: Path) -> Path:
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "requirements.txt").write_text("fastapi==0.115.5\nuvicorn==0.32.1\n")
+    (tmp_path / "backend" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n")
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "frontend" / "package.json").write_text(json.dumps({
+        "name": "ui",
+        "scripts": {"dev": "vite"},
+        "dependencies": {"react": "^18.0.0"},
+    }))
+    return tmp_path
+
+
 def test_boot_detector_node(temp_repo_node):
     cfg = detect_boot_config(temp_repo_node)
     assert cfg.stack in ("node", "polyglot")
     assert "npm ci" in cfg.setup_cmds
     assert cfg.start_cmd == "npm run start"
     assert cfg.has_ui is True
+    assert cfg.workdir == "."
 
 
 def test_boot_detector_python_fastapi(temp_repo_python):
@@ -46,6 +62,15 @@ def test_boot_detector_python_fastapi(temp_repo_python):
     assert "main:app" in cfg.start_cmd
 
 
+def test_boot_detector_monorepo_prefers_backend(temp_repo_monorepo):
+    """DevFlow-style monorepos: a backend/ + frontend/ tree should boot the backend
+    (the QA agent's HTTP probes are far more interesting against a real API)."""
+    cfg = detect_boot_config(temp_repo_monorepo)
+    assert cfg.start_cmd is not None
+    assert "uvicorn" in cfg.start_cmd
+    assert cfg.workdir == "backend"
+
+
 def test_boot_detector_no_manifests(tmp_path):
     cfg = detect_boot_config(tmp_path)
     assert cfg.stack == "unknown"
@@ -54,49 +79,35 @@ def test_boot_detector_no_manifests(tmp_path):
 
 
 def test_runner_read_file_blocks_path_escape(tmp_path):
-    runner = DockerQARunner(
-        repo="acme/demo", branch="main",
-        artifact_dir=tmp_path / "artifacts",
-    )
-    runner.source_dir = tmp_path / "src"
+    runner = LocalRunner(source_dir=tmp_path / "src", artifact_dir=tmp_path / "artifacts")
     runner.source_dir.mkdir()
     (runner.source_dir / "good.txt").write_text("hello")
 
-    import asyncio
     assert asyncio.run(runner.read_file("good.txt")) == "hello"
-
     with pytest.raises(QARunnerError, match="escapes"):
         asyncio.run(runner.read_file("../escape.txt"))
 
 
-def test_runner_stop_is_idempotent_when_not_started(tmp_path):
-    runner = DockerQARunner(
-        repo="acme/demo", branch="main",
-        artifact_dir=tmp_path / "artifacts",
-    )
-    import asyncio
-    asyncio.run(runner.stop())
-
-
 def test_runner_start_without_prepare_raises(tmp_path):
-    runner = DockerQARunner(
-        repo="acme/demo", branch="main",
-        artifact_dir=tmp_path / "artifacts",
-    )
-    import asyncio
+    runner = LocalRunner(source_dir=tmp_path, artifact_dir=tmp_path / "artifacts")
     with pytest.raises(QARunnerError, match="prepare"):
         asyncio.run(runner.start())
 
 
 def test_runner_skips_when_no_start_command_detected(tmp_path):
-    runner = DockerQARunner(
-        repo="acme/demo", branch="main",
-        artifact_dir=tmp_path / "artifacts",
-    )
-    runner.source_dir = tmp_path
-    from qa.boot_detector import BootConfig
+    runner = LocalRunner(source_dir=tmp_path, artifact_dir=tmp_path / "artifacts")
+    from qa_worker.boot_detector import BootConfig
     runner.boot = BootConfig(stack="unknown", start_cmd=None, detection_notes=["nothing found"])
-
-    import asyncio
+    runner.workdir = tmp_path
     with pytest.raises(QARunnerError, match="No start command"):
         asyncio.run(runner.start())
+
+
+def test_callback_signs_body_with_hmac():
+    """The callback client must sign every POST so the receiver can verify origin."""
+    secret = "topsecret"
+    client = CallbackClient(callback_url="http://example.com/qa/callback", secret=secret, step_id=42)
+    body_dict = {"type": "qa_started", "branch": "feat/x", "step_id": 42}
+    body = json.dumps(body_dict, default=str).encode("utf-8")
+    expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    assert client._sign(body) == expected

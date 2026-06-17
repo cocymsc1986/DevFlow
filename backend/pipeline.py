@@ -11,10 +11,10 @@ from database import Issue, PipelineRun, AgentStep
 from github_client import GitHubClient
 from agents import (
     IntakeAgent, AssessmentAgent, RefinementReviewAgent, DesignAgent,
-    SizingAgent, CodingAgent, PRReviewAgent, QAAgent, EscalationAgent,
+    SizingAgent, CodingAgent, PRReviewAgent, EscalationAgent,
 )
 from observability import create_pipeline_trace, get_langfuse
-from qa import DockerQARunner, QARunnerError, QARunnerUnavailable
+import qa_callback
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,11 @@ STAGE_ORDER = [
 QA_ENABLED = os.getenv("QA_ENABLED", "false").lower() in ("1", "true", "yes")
 QA_ARTIFACT_DIR = Path(os.getenv("QA_ARTIFACT_DIR", "./qa_artifacts")).resolve()
 QA_MAX_REVISIONS = 1
+QA_WORKFLOW_REPO = os.getenv("QA_WORKFLOW_REPO", "")  # owner/name of the devflow repo hosting qa.yml
+QA_WORKFLOW_FILE = os.getenv("QA_WORKFLOW_FILE", "qa.yml")
+QA_WORKFLOW_REF = os.getenv("QA_WORKFLOW_REF", "main")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+QA_WORKFLOW_TIMEOUT = int(os.getenv("QA_WORKFLOW_TIMEOUT_SECONDS", "2100"))  # 35 min — workflow has 30 min limit
 
 _ROUTING_TABLE: dict[str, tuple[str, str]] = {
     "XS": ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"),
@@ -411,82 +416,118 @@ class Pipeline:
             skip_reason = f"Skipped: PR Review verdict was {pr_review.get('verdict', 'unknown')}, not APPROVE"
         elif not issue.github_repo or not issue.github_branch:
             skip_reason = "Skipped: no GitHub branch to check out"
+        elif not QA_WORKFLOW_REPO or not PUBLIC_BASE_URL:
+            skip_reason = "Skipped: QA_WORKFLOW_REPO or PUBLIC_BASE_URL not configured"
 
         if skip_reason:
             self._skip_step(step, skip_reason)
             await self._emit(issue_id, {
                 "type": "agent_skipped",
-                "step_id": step.id,
-                "agent": "qa",
-                "label": step.agent_label,
-                "step_number": step.step_number,
-                "reason": skip_reason,
+                "step_id": step.id, "agent": "qa", "label": step.agent_label,
+                "step_number": step.step_number, "reason": skip_reason,
             })
             return True
 
-        run_artifact_dir = QA_ARTIFACT_DIR / f"issue_{issue_id}" / f"step_{step.id}"
-        runner = DockerQARunner(
-            repo=issue.github_repo,
-            branch=issue.github_branch,
-            artifact_dir=run_artifact_dir,
-            github_token=os.getenv("GH_TOKEN"),
-        )
-
-        try:
-            boot_config = await runner.prepare()
-            context["qa_boot"] = boot_config.to_dict()
-
-            await self._emit(issue_id, {
-                "type": "qa_container_starting",
-                "step_id": step.id,
-                "boot": boot_config.to_dict(),
-            })
-            await runner.start()
-            await self._emit(issue_id, {
-                "type": "qa_container_ready",
-                "step_id": step.id,
-                "port": runner.host_port,
-            })
-        except QARunnerUnavailable as e:
-            reason = f"QA runner unavailable: {e}"
-            logger.warning("QA stage infra issue (non-fatal): %s", reason)
-            self._skip_step(step, reason)
-            await self._emit(issue_id, {
-                "type": "agent_skipped",
-                "step_id": step.id,
-                "agent": "qa",
-                "label": step.agent_label,
-                "step_number": step.step_number,
-                "reason": reason,
-            })
-            await runner.stop()
+        output = await self._dispatch_qa_workflow(issue_id, run, step, issue, context)
+        if output is None:
             return True
-        except QARunnerError as e:
-            logger.error("QA stage prep failed: %s", e)
-            self._fail_step(step, str(e))
-            await self._emit(issue_id, {"type": "agent_error", "step_id": step.id, "agent": "qa", "error": str(e)})
-            await runner.stop()
-            return True
+        context["qa"] = output
 
-        def emit_event(evt: dict) -> None:
-            evt["step_id"] = step.id
-            asyncio.create_task(self._emit(issue_id, evt))
-
-        try:
-            agent = QAAgent(runner=runner, artifact_run_dir=run_artifact_dir, emit=emit_event)
-            output = await self._run_agent(issue_id, run, step, agent, context)
-            if output is None:
-                await runner.stop()
-                return True
-
-            context["qa"] = output
-
-            if output.get("verdict") == "QA_FAIL":
-                await self._run_qa_revision_loop(issue_id, run, issue, context, output)
-        finally:
-            await runner.stop()
+        if output.get("verdict") == "QA_FAIL":
+            await self._run_qa_revision_loop(issue_id, run, issue, context, output)
 
         return True
+
+    async def _dispatch_qa_workflow(
+        self, issue_id: int, run: PipelineRun, step: AgentStep,
+        issue: Issue, context: dict,
+    ) -> Optional[dict]:
+        """Trigger qa.yml on QA_WORKFLOW_REPO and await the qa_complete callback."""
+        step.input_data = json.dumps({
+            "target_repo": issue.github_repo,
+            "target_branch": issue.github_branch,
+            "workflow_repo": QA_WORKFLOW_REPO,
+        })
+        self._start_step(step)
+        await self._emit(issue_id, {
+            "type": "agent_start",
+            "step_id": step.id, "agent": step.agent_name,
+            "label": step.agent_label, "step_number": step.step_number,
+        })
+
+        state = qa_callback.register_pending(step.id, issue_id)
+        callback_url = f"{PUBLIC_BASE_URL}/qa/callback"
+
+        try:
+            await asyncio.to_thread(
+                self.github.dispatch_workflow,
+                QA_WORKFLOW_REPO, QA_WORKFLOW_FILE, QA_WORKFLOW_REF,
+                {
+                    "target_repo": issue.github_repo,
+                    "target_branch": issue.github_branch,
+                    "issue_id": issue_id,
+                    "step_id": step.id,
+                    "callback_url": callback_url,
+                },
+            )
+        except Exception as e:
+            error_msg = f"Failed to dispatch QA workflow: {e}"
+            logger.error(error_msg)
+            qa_callback.clear_pending(step.id)
+            self._fail_step(step, error_msg)
+            await self._emit(issue_id, {"type": "agent_error", "step_id": step.id, "agent": "qa", "error": error_msg})
+            return None
+
+        await self._emit(issue_id, {
+            "type": "qa_workflow_dispatched", "step_id": step.id,
+            "workflow_repo": QA_WORKFLOW_REPO,
+        })
+
+        try:
+            await asyncio.wait_for(state.event.wait(), timeout=QA_WORKFLOW_TIMEOUT)
+        except asyncio.TimeoutError:
+            qa_callback.clear_pending(step.id)
+            error_msg = f"QA workflow did not call back within {QA_WORKFLOW_TIMEOUT}s"
+            self._fail_step(step, error_msg)
+            await self._emit(issue_id, {"type": "agent_error", "step_id": step.id, "agent": "qa", "error": error_msg})
+            return None
+
+        qa_callback.clear_pending(step.id)
+
+        if state.error or state.output is None:
+            error_msg = state.error or "QA worker reported no output"
+            self._fail_step(step, error_msg)
+            await self._emit(issue_id, {"type": "agent_error", "step_id": step.id, "agent": "qa", "error": error_msg})
+            return None
+
+        output = state.output
+        if state.boot:
+            context["qa_boot"] = state.boot
+        # Reconcile callback-collected findings/screenshots so the persisted
+        # step matches what the user saw in real time.
+        if state.findings and not output.get("findings"):
+            output["findings"] = state.findings
+        if state.screenshots:
+            output["screenshots"] = state.screenshots
+
+        result = {
+            "output": output,
+            "model": output.get("model"),
+            "tokens_used": output.get("tokens_used"),
+            "duration_seconds": output.get("duration_seconds"),
+            "completed_at": datetime.now(timezone.utc),
+        }
+        self._complete_step(step, result, output)
+        await self._emit(issue_id, {
+            "type": "agent_complete",
+            "step_id": step.id, "agent": step.agent_name,
+            "label": step.agent_label, "step_number": step.step_number,
+            "output": output,
+            "model": result.get("model"),
+            "tokens": result.get("tokens_used"),
+            "duration": result.get("duration_seconds"),
+        })
+        return output
 
     async def _run_qa_revision_loop(
         self, issue_id: int, run: PipelineRun, issue: Issue,
@@ -528,40 +569,10 @@ class Pipeline:
             )
             next_step_num += 1
 
-            run_artifact_dir = QA_ARTIFACT_DIR / f"issue_{issue_id}" / f"step_{rev_qa_step.id}"
-            runner = DockerQARunner(
-                repo=issue.github_repo,
-                branch=issue.github_branch,
-                artifact_dir=run_artifact_dir,
-                github_token=os.getenv("GH_TOKEN"),
-            )
-            try:
-                boot_config = await runner.prepare()
-                context["qa_boot"] = boot_config.to_dict()
-                await runner.start()
-            except (QARunnerError, QARunnerUnavailable) as e:
-                self._skip_step(rev_qa_step, f"QA revision skipped: {e}")
-                await self._emit(issue_id, {
-                    "type": "agent_skipped",
-                    "step_id": rev_qa_step.id, "agent": "qa",
-                    "label": rev_qa_step.agent_label,
-                    "step_number": rev_qa_step.step_number, "reason": str(e),
-                })
-                await runner.stop()
+            output = await self._dispatch_qa_workflow(issue_id, run, rev_qa_step, issue, context)
+            if output is None:
                 return
-
-            def emit_event(evt: dict) -> None:
-                evt["step_id"] = rev_qa_step.id
-                asyncio.create_task(self._emit(issue_id, evt))
-
-            try:
-                agent = QAAgent(runner=runner, artifact_run_dir=run_artifact_dir, emit=emit_event)
-                qa_output = await self._run_agent(issue_id, run, rev_qa_step, agent, context)
-            finally:
-                await runner.stop()
-
-            if qa_output is None:
-                return
+            qa_output = output
             context["qa"] = qa_output
 
     async def run(self, issue_id: int) -> PipelineRun:

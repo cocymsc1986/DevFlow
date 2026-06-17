@@ -1,0 +1,83 @@
+name: QA Agent
+
+# Triggered by DevFlow's control plane via the API when a PR reaches the QA
+# stage. Runs on a clean GH-hosted runner so the prod EC2 box stays uninvolved.
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "owner/name of the repo whose PR branch to QA"
+        required: true
+      target_branch:
+        description: "PR branch name on target_repo"
+        required: true
+      issue_id:
+        description: "DevFlow issue ID"
+        required: true
+      step_id:
+        description: "DevFlow AgentStep ID to write findings back to"
+        required: true
+      callback_url:
+        description: "DevFlow callback base URL, e.g. http://devflow.example.com/qa/callback"
+        required: true
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout DevFlow (QA worker)
+        uses: actions/checkout@v4
+        with:
+          path: devflow
+          persist-credentials: false
+
+      - name: Checkout target PR branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.target_branch }}
+          path: target
+          token: ${{ secrets.GH_TOKEN }}
+          # Critical: do NOT write the token into target/.git/config — the QA
+          # agent has bash access and could otherwise read & exfiltrate it.
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node (for Playwright + Node app boot)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install QA worker dependencies
+        run: pip install anthropic==0.40.0
+
+      - name: Run QA worker
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          QA_CALLBACK_SECRET: ${{ secrets.QA_CALLBACK_SECRET }}
+          QA_TIMEOUT_SECONDS: "1500"
+        working-directory: devflow/backend
+        run: |
+          python -m qa_worker \
+            --issue-id "${{ inputs.issue_id }}" \
+            --step-id "${{ inputs.step_id }}" \
+            --branch "${{ inputs.target_branch }}" \
+            --callback-url "${{ inputs.callback_url }}" \
+            --source-dir "${{ github.workspace }}/target" \
+            --artifact-dir "${{ github.workspace }}/qa_artifacts"
+
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-artifacts-${{ inputs.issue_id }}-${{ inputs.step_id }}
+          path: qa_artifacts
+          retention-days: 7
+          if-no-files-found: ignore
