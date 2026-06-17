@@ -1,6 +1,8 @@
 # DevFlow
 
-A fully agentic developer pipeline. Submit an issue, watch 9 AI agents process it in real-time — from intake through coding, PR creation, and human escalation.
+A fully agentic developer pipeline. Submit an issue, watch a chain of AI agents process it in real-time — from intake through coding, PR creation, QA, and human escalation.
+
+> 📐 **Architecture & flow diagrams:** see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for system context, the agent pipeline, the off-box QA flow, deployment, and the data model.
 
 ## Stack
 
