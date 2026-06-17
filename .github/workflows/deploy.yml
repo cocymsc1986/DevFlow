@@ -27,6 +27,10 @@ jobs:
             LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
             LANGFUSE_HOST=${{ vars.LANGFUSE_HOST }}
+            QA_ENABLED=${{ vars.QA_ENABLED }}
+            QA_WORKFLOW_REPO=${{ vars.QA_WORKFLOW_REPO }}
+            QA_CALLBACK_SECRET=${{ secrets.QA_CALLBACK_SECRET }}
+            PUBLIC_BASE_URL=http://${{ vars.EC2_HOST }}
             EOF
             chmod 600 /home/ubuntu/DevFlow/.env
             cd /home/ubuntu/DevFlow

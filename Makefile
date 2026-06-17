@@ -1,9 +1,7 @@
-.PHONY: qa-image qa-image-clean
+.PHONY: test test-qa
 
-QA_IMAGE ?= devflow/qa-runner:latest
+test:
+	cd backend && python -m pytest
 
-qa-image:
-	docker build -t $(QA_IMAGE) backend/qa/images
-
-qa-image-clean:
-	docker rmi $(QA_IMAGE) || true
+test-qa:
+	cd backend && python -m pytest test_qa_worker.py -v

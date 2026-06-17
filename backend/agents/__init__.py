@@ -6,7 +6,6 @@ from .sizing import SizingAgent
 from .router import RouterAgent
 from .coding import CodingAgent
 from .pr_review import PRReviewAgent
-from .qa import QAAgent
 from .escalation import EscalationAgent
 
 __all__ = [
@@ -18,6 +17,5 @@ __all__ = [
     "RouterAgent",
     "CodingAgent",
     "PRReviewAgent",
-    "QAAgent",
     "EscalationAgent",
 ]

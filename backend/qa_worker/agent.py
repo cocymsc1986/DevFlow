@@ -4,16 +4,20 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable, Optional
 
 import anthropic
 
-from .base import BaseAgent, MAX_RETRIES, RETRY_BASE_DELAY, get_anthropic_client
-from qa import DockerQARunner, QARunnerError, QARunnerUnavailable
+from .runner import LocalRunner, QARunnerError
 
 logger = logging.getLogger(__name__)
 
 QA_MAX_TOOL_TURNS = int(os.getenv("QA_MAX_TOOL_TURNS", "30"))
+QA_MODEL = os.getenv("QA_MODEL", "claude-opus-4-7")
 QA_MODEL_MAX_TOKENS = 4096
+API_TIMEOUT = 300
+MAX_RETRIES = 2
+RETRY_BASE_DELAY = 2
 
 TOOLS = [
     {
@@ -31,9 +35,8 @@ TOOLS = [
     {
         "name": "bash",
         "description": (
-            "Run a shell command inside the QA container alongside the running app. "
-            "Use for `curl` probes, log inspection (`tail /tmp/devflow-app.log`), or "
-            "filesystem inspection. NOT for installing packages — the app is already booted."
+            "Run a shell command alongside the running app. Use for `curl` probes, log inspection, "
+            "or filesystem inspection. NOT for installing packages — the app is already booted."
         ),
         "input_schema": {
             "type": "object",
@@ -123,8 +126,7 @@ TOOLS = [
 ]
 
 
-def _system_prompt() -> str:
-    return """You are an adversarial QA engineer reviewing a pull request against a running instance of the app.
+SYSTEM_PROMPT = """You are an adversarial QA engineer reviewing a pull request against a running instance of the app.
 
 Your job is to find runtime defects in the **changed surface area** of the PR — not to re-review the diff statically (that already happened) and not to run unit tests (those run in CI).
 
@@ -152,11 +154,19 @@ Your job is to find runtime defects in the **changed surface area** of the PR �
 
 ## Constraints
 
-- All probes go through the provided tools. You do NOT have network access to the outside world.
+- All probes go through the provided tools.
 - The app is already booted. Do NOT try to install packages or restart the app.
 - Be concise in tool inputs — tool results are appended to your context.
 - Stop calling tools and call `finish` as soon as you have a verdict.
 """
+
+
+def _preview(value, limit: int = 200) -> str:
+    try:
+        text = json.dumps(value)
+    except Exception:
+        text = str(value)
+    return text[:limit] + ("..." if len(text) > limit else "")
 
 
 def _format_initial_user_message(context: dict) -> str:
@@ -164,14 +174,12 @@ def _format_initial_user_message(context: dict) -> str:
     assessment = context.get("assessment") or {}
     files = coding.get("files", [])
     test_files = coding.get("test_files", [])
+    boot = context.get("qa_boot") or {}
 
     changed_summary = [
         {"path": f.get("path"), "action": f.get("action"), "description": f.get("description")}
         for f in files
     ]
-
-    boot = context.get("qa_boot") or {}
-
     return json.dumps(
         {
             "pr_title": coding.get("pr_title"),
@@ -180,6 +188,7 @@ def _format_initial_user_message(context: dict) -> str:
             "has_ui": context.get("has_ui", False),
             "boot_config": {
                 "stack": boot.get("stack"),
+                "workdir": boot.get("workdir"),
                 "start_cmd": boot.get("start_cmd"),
                 "port": boot.get("port"),
                 "detection_notes": boot.get("detection_notes", []),
@@ -196,19 +205,18 @@ def _format_initial_user_message(context: dict) -> str:
     )
 
 
-class QAAgent(BaseAgent):
-    name = "qa"
-    label = "QA Agent"
-    default_model = "claude-opus-4-7"
-    max_tokens = QA_MODEL_MAX_TOKENS
-    api_timeout = 300
-    allow_truncation = True
+class QAAgent:
+    """Multi-turn adversarial QA agent. Runs entirely inside the GH Actions worker."""
 
-    def __init__(self, runner: DockerQARunner, artifact_run_dir: Path, model: str = None,
-                 max_turns: int = QA_MAX_TOOL_TURNS, emit=None):
-        super().__init__(model)
+    def __init__(
+        self,
+        runner: LocalRunner,
+        emit: Optional[Callable[[dict], None]] = None,
+        model: str = QA_MODEL,
+        max_turns: int = QA_MAX_TOOL_TURNS,
+    ):
         self.runner = runner
-        self.artifact_run_dir = Path(artifact_run_dir)
+        self.model = model
         self.max_turns = max_turns
         self.emit = emit or (lambda evt: None)
         self.findings: list[dict] = []
@@ -216,14 +224,7 @@ class QAAgent(BaseAgent):
         self.screenshots: list[str] = []
         self.tool_calls_made = 0
 
-    def get_system_prompt(self) -> str:
-        return _system_prompt()
-
-    def format_input(self, context: dict) -> str:
-        return _format_initial_user_message(context)
-
     async def _dispatch_tool(self, name: str, args: dict) -> tuple[str, bool]:
-        """Returns (tool_result_text, is_error)."""
         self.tool_calls_made += 1
         try:
             if name == "read_file":
@@ -244,22 +245,22 @@ class QAAgent(BaseAgent):
                 return json.dumps(res), False
 
             if name == "playwright":
-                res = await self.runner.playwright(
-                    args["name"], args["script"], self.artifact_run_dir,
-                )
+                res = await self.runner.playwright(args["name"], args["script"])
                 self.tests_written.append({"name": res.name, "passed": res.passed})
                 self.screenshots.extend(res.screenshots)
                 return json.dumps(res.to_dict()), False
 
             if name == "record_finding":
-                self.findings.append({
+                finding = {
                     "severity": args["severity"],
                     "category": args["category"],
                     "title": args["title"],
                     "repro": args["repro"],
                     "evidence": args["evidence"],
                     "file": args.get("file"),
-                })
+                }
+                self.findings.append(finding)
+                self.emit({"type": "qa_finding", "finding": finding})
                 return json.dumps({"recorded": True, "total_findings": len(self.findings)}), False
 
             if name == "finish":
@@ -272,7 +273,7 @@ class QAAgent(BaseAgent):
             logger.exception("QA tool %s raised", name)
             return f"Tool error: {type(e).__name__}: {e}", True
 
-    def _final_verdict(self, claimed_verdict: str | None) -> str:
+    def _final_verdict(self, claimed_verdict: Optional[str]) -> str:
         critical_or_major = any(f["severity"] in ("critical", "major") for f in self.findings)
         if critical_or_major:
             return "QA_FAIL"
@@ -280,157 +281,103 @@ class QAAgent(BaseAgent):
             return claimed_verdict
         return "QA_PASS"
 
-    async def run(self, context: dict, langfuse_trace=None) -> dict:
-        client = get_anthropic_client()
+    async def run(self, context: dict) -> dict:
+        client = anthropic.AsyncAnthropic()
         started_at = datetime.now(timezone.utc)
-        system_prompt = self.get_system_prompt()
-        user_message = self.format_input(context)
-
+        user_message = _format_initial_user_message(context)
         messages = [{"role": "user", "content": user_message}]
-        generation = None
-        if langfuse_trace is not None:
-            try:
-                generation = langfuse_trace.generation(
-                    name=self.name, model=self.model,
-                    input=[{"role": "system", "content": system_prompt}, *messages],
-                    start_time=started_at,
-                )
-            except Exception:
-                generation = None
 
         total_input_tokens = 0
         total_output_tokens = 0
-        claimed_verdict = None
-        claimed_summary = None
+        claimed_verdict: Optional[str] = None
+        claimed_summary: Optional[str] = None
         finished = False
         last_text = ""
+        turn = 0
 
-        try:
-            for turn in range(self.max_turns):
-                response = None
-                for attempt in range(MAX_RETRIES):
-                    try:
-                        response = await client.messages.create(
-                            model=self.model,
-                            max_tokens=self.max_tokens,
-                            system=system_prompt,
-                            tools=TOOLS,
-                            messages=messages,
-                            timeout=self.api_timeout,
-                        )
-                        break
-                    except anthropic.APITimeoutError:
-                        raise RuntimeError(f"QA agent turn {turn} timed out after {self.api_timeout}s")
-                    except (anthropic.APIConnectionError, anthropic.RateLimitError) as e:
-                        if attempt < MAX_RETRIES - 1:
-                            await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
-                        else:
-                            raise
-                    except anthropic.APIStatusError as e:
-                        if e.status_code >= 500 and attempt < MAX_RETRIES - 1:
-                            await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
-                        else:
-                            raise
-
-                total_input_tokens += response.usage.input_tokens
-                total_output_tokens += response.usage.output_tokens
-
-                tool_uses = [b for b in response.content if b.type == "tool_use"]
-                texts = [b.text for b in response.content if b.type == "text"]
-                if texts:
-                    last_text = texts[-1]
-
-                messages.append({"role": "assistant", "content": response.content})
-
-                if response.stop_reason == "end_turn" and not tool_uses:
-                    break
-
-                if not tool_uses:
-                    break
-
-                tool_results = []
-                for tu in tool_uses:
-                    try:
-                        self.emit({
-                            "type": "qa_tool_use",
-                            "tool": tu.name,
-                            "turn": turn,
-                            "input_preview": _preview(tu.input),
-                        })
-                    except Exception:
-                        pass
-
-                    result_text, is_error = await self._dispatch_tool(tu.name, tu.input or {})
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tu.id,
-                        "content": result_text,
-                        "is_error": is_error,
-                    })
-
-                    if tu.name == "finish":
-                        claimed_verdict = (tu.input or {}).get("verdict")
-                        claimed_summary = (tu.input or {}).get("summary")
-                        finished = True
-
-                messages.append({"role": "user", "content": tool_results})
-
-                if finished:
-                    break
-
-            verdict = self._final_verdict(claimed_verdict)
-            completed_at = datetime.now(timezone.utc)
-            summary = claimed_summary or (
-                f"QA completed after {self.tool_calls_made} tool calls with "
-                f"{len(self.findings)} findings."
-            )
-
-            output = {
-                "verdict": verdict,
-                "summary": summary,
-                "findings": self.findings,
-                "tests_written": self.tests_written,
-                "screenshots": self.screenshots,
-                "tool_calls": self.tool_calls_made,
-                "turns_used": turn + 1 if 'turn' in locals() else 0,
-                "explicit_finish": finished,
-                "last_model_message": last_text[:2000],
-            }
-
-            tokens = total_input_tokens + total_output_tokens
-            if generation is not None:
+        for turn in range(self.max_turns):
+            response = None
+            for attempt in range(MAX_RETRIES):
                 try:
-                    generation.end(
-                        output=json.dumps(output)[:8000],
-                        usage={"input": total_input_tokens, "output": total_output_tokens, "unit": "TOKENS"},
-                        end_time=completed_at,
+                    response = await client.messages.create(
+                        model=self.model,
+                        max_tokens=QA_MODEL_MAX_TOKENS,
+                        system=SYSTEM_PROMPT,
+                        tools=TOOLS,
+                        messages=messages,
+                        timeout=API_TIMEOUT,
                     )
-                except Exception:
-                    pass
+                    break
+                except anthropic.APITimeoutError:
+                    raise RuntimeError(f"QA agent turn {turn} timed out after {API_TIMEOUT}s")
+                except (anthropic.APIConnectionError, anthropic.RateLimitError):
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                    else:
+                        raise
+                except anthropic.APIStatusError as e:
+                    if e.status_code >= 500 and attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                    else:
+                        raise
 
-            return {
-                "output": output,
-                "raw_output": json.dumps(output),
-                "model": self.model,
-                "tokens_used": tokens,
-                "started_at": started_at,
-                "completed_at": completed_at,
-                "duration_seconds": (completed_at - started_at).total_seconds(),
-            }
-        except Exception:
-            if generation is not None:
-                try:
-                    generation.end(level="ERROR", status_message="QA agent failed")
-                except Exception:
-                    pass
-            raise
+            total_input_tokens += response.usage.input_tokens
+            total_output_tokens += response.usage.output_tokens
 
+            tool_uses = [b for b in response.content if b.type == "tool_use"]
+            texts = [b.text for b in response.content if b.type == "text"]
+            if texts:
+                last_text = texts[-1]
 
-def _preview(value, limit: int = 200) -> str:
-    try:
-        text = json.dumps(value)
-    except Exception:
-        text = str(value)
-    if len(text) > limit:
-        return text[:limit] + "..."
-    return text
+            messages.append({"role": "assistant", "content": response.content})
+
+            if response.stop_reason == "end_turn" and not tool_uses:
+                break
+            if not tool_uses:
+                break
+
+            tool_results = []
+            for tu in tool_uses:
+                self.emit({
+                    "type": "qa_tool_use",
+                    "tool": tu.name,
+                    "turn": turn,
+                    "input_preview": _preview(tu.input),
+                })
+                result_text, is_error = await self._dispatch_tool(tu.name, tu.input or {})
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": result_text,
+                    "is_error": is_error,
+                })
+                if tu.name == "finish":
+                    claimed_verdict = (tu.input or {}).get("verdict")
+                    claimed_summary = (tu.input or {}).get("summary")
+                    finished = True
+
+            messages.append({"role": "user", "content": tool_results})
+            if finished:
+                break
+
+        verdict = self._final_verdict(claimed_verdict)
+        completed_at = datetime.now(timezone.utc)
+        summary = claimed_summary or (
+            f"QA completed after {self.tool_calls_made} tool calls with {len(self.findings)} findings."
+        )
+        return {
+            "verdict": verdict,
+            "summary": summary,
+            "findings": self.findings,
+            "tests_written": self.tests_written,
+            "screenshots": self.screenshots,
+            "tool_calls": self.tool_calls_made,
+            "turns_used": turn + 1,
+            "explicit_finish": finished,
+            "last_model_message": last_text[:2000],
+            "model": self.model,
+            "tokens_used": total_input_tokens + total_output_tokens,
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "duration_seconds": (completed_at - started_at).total_seconds(),
+        }

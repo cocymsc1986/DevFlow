@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from database import init_db, get_db, SessionLocal, Issue, PipelineRun, AgentStep
 from github_client import GitHubClient
 from pipeline import Pipeline
+import qa_callback
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -96,6 +97,8 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+qa_callback.register_broadcast(manager.broadcast)
+app.include_router(qa_callback.router)
 
 _running_tasks: dict[int, asyncio.Task] = {}
 

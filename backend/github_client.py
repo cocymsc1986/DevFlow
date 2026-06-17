@@ -150,6 +150,16 @@ class GitHubClient:
                 pass
         return {"files": files}
 
+    def dispatch_workflow(self, repo: str, workflow_file: str, ref: str, inputs: dict) -> None:
+        """Trigger a workflow_dispatch event. PyGithub doesn't expose this directly,
+        so we hit the REST endpoint via the underlying requester."""
+        gh_repo = self._get_repo(repo)
+        path = f"/repos/{gh_repo.full_name}/actions/workflows/{workflow_file}/dispatches"
+        body = {"ref": ref, "inputs": {k: str(v) for k, v in inputs.items()}}
+        status, _, _ = self._github._Github__requester.requestJson("POST", path, input=body)
+        if status >= 300:
+            raise GithubException(status, {"message": f"workflow_dispatch failed: {status}"}, headers={})
+
     def get_repo_info(self, repo: str = None) -> dict:
         if not self._github:
             return {"configured": False}

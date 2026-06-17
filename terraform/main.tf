@@ -81,6 +81,14 @@ resource "aws_instance" "devflow" {
 
   user_data = file("${path.module}/../deploy/setup.sh")
 
+  # IMDSv2 required, hop limit 1 so processes can't curl creds via the host
+  # gateway from inside a container or namespace.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
   tags = {
     Name = "devflow"
   }
