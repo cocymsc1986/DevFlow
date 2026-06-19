@@ -150,6 +150,26 @@ class GitHubClient:
                 pass
         return {"files": files}
 
+    def get_branch_head_sha(self, repo: str, branch: str) -> str:
+        gh_repo = self._get_repo(repo)
+        return gh_repo.get_branch(branch).commit.sha
+
+    def get_check_runs(self, repo: str, ref: str) -> list[dict]:
+        gh_repo = self._get_repo(repo)
+        commit = gh_repo.get_commit(ref)
+        result = []
+        for cr in commit.get_check_runs():
+            result.append({
+                "id": cr.id,
+                "name": cr.name,
+                "status": cr.status,
+                "conclusion": cr.conclusion,
+                "url": cr.html_url,
+                "started_at": cr.started_at.isoformat() if cr.started_at else None,
+                "completed_at": cr.completed_at.isoformat() if cr.completed_at else None,
+            })
+        return result
+
     def dispatch_workflow(self, repo: str, workflow_file: str, ref: str, inputs: dict) -> None:
         """Trigger a workflow_dispatch event. PyGithub doesn't expose this directly,
         so we hit the REST endpoint via the underlying requester."""

@@ -193,6 +193,11 @@ export default function AgentStep({ step, isLast, onRetryFromStage, issueFailed 
           </div>
         )}
 
+        {/* CI Observer details */}
+        {(step.agent_name === 'ci_observe' || step.agent_name?.startsWith('ci_observe_revision')) && step.output_data?.checks && (
+          <CiObserveResult output={step.output_data} />
+        )}
+
         {/* QA stage details */}
         {(step.agent_name === 'qa' || step.agent_name?.startsWith('qa_revision')) && step.status === 'completed' && step.output_data && (
           <QaResult output={step.output_data} />
@@ -201,6 +206,92 @@ export default function AgentStep({ step, isLast, onRetryFromStage, issueFailed 
         {/* JSON panels */}
         <JsonPanel label="Input" data={step.input_data} />
         <JsonPanel label="Output" data={step.output_data} />
+      </div>
+    </div>
+  )
+}
+
+function CiCheckIcon({ status, conclusion }) {
+  if (status !== 'completed') {
+    return (
+      <svg className="w-3.5 h-3.5 text-amber-400 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+    )
+  }
+  const failed = ['failure', 'cancelled', 'timed_out', 'action_required'].includes(conclusion)
+  const neutral = ['neutral', 'skipped'].includes(conclusion)
+  if (failed) {
+    return (
+      <svg className="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    )
+  }
+  if (neutral) {
+    return <span className="w-3.5 h-3.5 flex items-center justify-center text-text-muted text-xs">—</span>
+  }
+  return (
+    <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+    </svg>
+  )
+}
+
+function CiObserveResult({ output }) {
+  const checks = output.checks || []
+  const outcome = output.outcome
+
+  if (checks.length === 0 && outcome === 'no_checks') {
+    return <p className="mt-2 text-xs text-text-muted italic">No CI checks found on this branch.</p>
+  }
+  if (checks.length === 0) return null
+
+  const outcomeStyle = outcome === 'success'
+    ? 'text-emerald-400 border-emerald-400/20 bg-emerald-400/5'
+    : outcome === 'failure'
+    ? 'text-rose-400 border-rose-400/20 bg-rose-400/5'
+    : outcome === 'timeout'
+    ? 'text-amber-400 border-amber-400/20 bg-amber-400/5'
+    : 'text-blue-400 border-blue-400/20 bg-blue-400/5'
+
+  const outcomeLabel = {
+    success: 'All checks passed',
+    failure: `${output.failed_count ?? checks.filter(c => ['failure','cancelled','timed_out','action_required'].includes(c.conclusion)).length} check(s) failed`,
+    timeout: 'Timed out waiting for checks',
+    no_checks: 'No checks found',
+    in_progress: 'Checks running…',
+  }[outcome] ?? outcome
+
+  return (
+    <div className="mt-2 space-y-2">
+      <span className={`inline-block text-xs font-mono px-2 py-0.5 rounded border ${outcomeStyle}`}>
+        {outcomeLabel}
+      </span>
+      <div className="space-y-1">
+        {checks.map((c, i) => (
+          <div key={c.id ?? i} className="flex items-center gap-2 text-xs font-mono">
+            <CiCheckIcon status={c.status} conclusion={c.conclusion} />
+            <span className={
+              c.conclusion && ['failure','cancelled','timed_out','action_required'].includes(c.conclusion)
+                ? 'text-rose-300'
+                : c.status !== 'completed'
+                ? 'text-amber-300'
+                : 'text-text-muted'
+            }>{c.name}</span>
+            {c.url && (
+              <a
+                href={c.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-auto text-text-muted hover:text-accent transition-colors"
+              >
+                ↗
+              </a>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )
