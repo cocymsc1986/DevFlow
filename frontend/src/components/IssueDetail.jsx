@@ -124,8 +124,10 @@ export default function IssueDetail() {
       }
 
       if (msg.type === 'ci_check_update') {
+        // Match by step_id so live updates also reach CI-revision observer steps,
+        // not just the initial ci_observe step.
         setSteps(prev => prev.map(s =>
-          s.agent_name === 'ci_observe' && s.status === 'running'
+          s.id === msg.step_id && s.status === 'running'
             ? { ...s, output_data: { checks: msg.checks, outcome: 'in_progress' } }
             : s
         ))
