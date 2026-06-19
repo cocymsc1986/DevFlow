@@ -85,10 +85,18 @@ STAGE_ORDER = [
 ]
 
 CI_OBSERVE_ENABLED = os.getenv("CI_OBSERVE_ENABLED", "true").lower() in ("1", "true", "yes")
-CI_OBSERVE_TIMEOUT = int(os.getenv("CI_OBSERVE_TIMEOUT_SECONDS", "600"))
+CI_OBSERVE_TIMEOUT = int(os.getenv("CI_OBSERVE_TIMEOUT_SECONDS", "120"))
 CI_OBSERVE_POLL_INTERVAL = int(os.getenv("CI_OBSERVE_POLL_SECONDS", "15"))
+# How long to wait for *any* check run to register before concluding the repo
+# has no CI. GitHub Actions can take a while to create queued check runs after a
+# push, so this must be comfortably longer than a single poll interval.
+CI_OBSERVE_START_GRACE = int(os.getenv("CI_OBSERVE_START_GRACE_SECONDS", "75"))
 CI_MAX_REVISIONS = int(os.getenv("CI_MAX_REVISIONS", "1"))
-_CI_FAILURE_CONCLUSIONS = {"failure", "cancelled", "timed_out", "action_required"}
+# Conclusions that mean the build is broken and a code fix is warranted.
+_CI_FAILURE_CONCLUSIONS = {"failure", "cancelled", "timed_out"}
+# Conclusions that mean a human needs to act (e.g. approve a workflow run). A
+# coding revision can't resolve these, so they are surfaced rather than retried.
+_CI_ATTENTION_CONCLUSIONS = {"action_required"}
 
 QA_ENABLED = os.getenv("QA_ENABLED", "false").lower() in ("1", "true", "yes")
 QA_ARTIFACT_DIR = Path(os.getenv("QA_ARTIFACT_DIR", "./qa_artifacts")).resolve()
@@ -444,11 +452,7 @@ class Pipeline:
 
         checks, outcome = await self._poll_ci_checks(issue_id, step, issue.github_repo, issue.github_branch)
 
-        result_output = {"checks": checks, "outcome": outcome}
-        if outcome == "failure":
-            result_output["failed_count"] = sum(
-                1 for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS
-            )
+        result_output = self._ci_result_output(checks, outcome)
 
         self._complete_step(step, {"output": result_output, "completed_at": datetime.now(timezone.utc)}, result_output)
         await self._emit(issue_id, {
@@ -463,12 +467,25 @@ class Pipeline:
 
         return True
 
+    @staticmethod
+    def _ci_result_output(checks: list[dict], outcome: str) -> dict:
+        result_output = {"checks": checks, "outcome": outcome}
+        if outcome == "failure":
+            result_output["failed_count"] = sum(
+                1 for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS
+            )
+        return result_output
+
     async def _poll_ci_checks(
         self, issue_id: int, step: AgentStep, repo: str, branch: str,
     ) -> tuple[list[dict], str]:
-        """Poll GitHub check runs until all complete or timeout. Returns (checks, outcome)."""
+        """Poll GitHub check runs until all complete or timeout. Returns (checks, outcome).
+
+        outcome is one of: "success", "failure", "action_required" (a human needs
+        to approve/act — not fixable by code), "no_checks" (the branch has no CI),
+        or "timeout" (checks never finished within the budget).
+        """
         elapsed = 0
-        no_checks_threshold = CI_OBSERVE_POLL_INTERVAL * 2  # two polls with no checks → skip
 
         while elapsed < CI_OBSERVE_TIMEOUT:
             await asyncio.sleep(CI_OBSERVE_POLL_INTERVAL)
@@ -482,8 +499,10 @@ class Pipeline:
                 checks = []
 
             if not checks:
-                if elapsed >= no_checks_threshold:
-                    logger.info("No CI checks found for branch %s after %ds — skipping CI observation", branch, elapsed)
+                # Don't conclude "no CI" until the grace window has elapsed — GitHub
+                # can be slow to register queued check runs after a push.
+                if elapsed >= CI_OBSERVE_START_GRACE:
+                    logger.info("No CI checks found for branch %s after %ds — treating as no CI", branch, elapsed)
                     return [], "no_checks"
                 continue
 
@@ -498,11 +517,7 @@ class Pipeline:
             if pending:
                 continue
 
-            # All completed — classify outcome
-            failed = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
-            if failed:
-                return checks, "failure"
-            return checks, "success"
+            return checks, self._classify_checks(checks)
 
         logger.warning("CI check observation timed out after %ds for branch %s", CI_OBSERVE_TIMEOUT, branch)
         try:
@@ -512,6 +527,16 @@ class Pipeline:
             checks = []
         return checks, "timeout"
 
+    @staticmethod
+    def _classify_checks(checks: list[dict]) -> str:
+        """Classify a fully-completed set of check runs. Hard failures take
+        precedence over checks that merely need human action."""
+        if any(c.get("conclusion") in _CI_FAILURE_CONCLUSIONS for c in checks):
+            return "failure"
+        if any(c.get("conclusion") in _CI_ATTENTION_CONCLUSIONS for c in checks):
+            return "action_required"
+        return "success"
+
     async def _run_ci_revision_loop(
         self, issue_id: int, run: PipelineRun, issue: Issue, context: dict,
     ) -> None:
@@ -520,6 +545,7 @@ class Pipeline:
 
         next_step_num = max(s.step_number for s in run.agent_steps) + 1
         revision = 0
+        resolved = False
 
         while context.get("ci_failures") and revision < CI_MAX_REVISIONS:
             revision += 1
@@ -535,7 +561,7 @@ class Pipeline:
                 CodingAgent(model=coding_model), context,
             )
             if coding_output is None:
-                return
+                break
             context["coding"] = coding_output
 
             if self.github.is_configured and issue.github_repo and issue.github_branch:
@@ -559,11 +585,7 @@ class Pipeline:
             checks, outcome = await self._poll_ci_checks(
                 issue_id, rev_ci_step, issue.github_repo, issue.github_branch,
             )
-            result_output = {"checks": checks, "outcome": outcome}
-            if outcome == "failure":
-                result_output["failed_count"] = sum(
-                    1 for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS
-                )
+            result_output = self._ci_result_output(checks, outcome)
 
             self._complete_step(rev_ci_step, {"output": result_output, "completed_at": datetime.now(timezone.utc)}, result_output)
             await self._emit(issue_id, {
@@ -573,10 +595,45 @@ class Pipeline:
                 "output": result_output,
             })
 
-            if outcome == "failure":
-                context["ci_failures"] = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
-            else:
+            if outcome == "success":
+                resolved = True
                 context.pop("ci_failures", None)
+                break
+            if outcome == "failure":
+                # A fresh, fully-completed failing run — keep iterating with the new failures.
+                context["ci_failures"] = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
+                continue
+            # no_checks / timeout / action_required after a push are *inconclusive*:
+            # CI either didn't run again or needs a human. Don't claim success — stop
+            # and let the unresolved state be surfaced.
+            logger.info("CI revision %d ended inconclusive (%s) for branch %s", revision, outcome, issue.github_branch)
+            break
+
+        # Whatever happened, the dedicated CI loop has had its turn. Clear ci_failures
+        # so they don't bleed into PR-review-driven coding revisions, but record an
+        # unresolved marker (non-blocking) so the PR review and UI can flag red CI.
+        if not resolved and context.get("ci_failures"):
+            context["ci_unresolved"] = context["ci_failures"]
+            logger.warning(
+                "CI still failing after %d revision(s) for branch %s — proceeding to PR review with CI flagged unresolved",
+                revision, issue.github_branch,
+            )
+        context.pop("ci_failures", None)
+
+        # Keep downstream static steps ordered after the dynamically inserted
+        # revision steps so the UI timeline reads top-to-bottom.
+        if revision > 0:
+            self._renumber_trailing_steps(run, ["pr_review", "qa", "escalation"], next_step_num)
+
+    def _renumber_trailing_steps(self, run: PipelineRun, agent_names: list[str], start_num: int) -> None:
+        by_name = {s.agent_name: s for s in run.agent_steps}
+        num = start_num
+        for name in agent_names:
+            step = by_name.get(name)
+            if step is not None:
+                step.step_number = num
+                num += 1
+        self.db.commit()
 
     async def _run_qa_stage(
         self, issue_id: int, run: PipelineRun, step: AgentStep,

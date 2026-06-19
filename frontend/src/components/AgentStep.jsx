@@ -220,12 +220,20 @@ function CiCheckIcon({ status, conclusion }) {
       </svg>
     )
   }
-  const failed = ['failure', 'cancelled', 'timed_out', 'action_required'].includes(conclusion)
+  const failed = ['failure', 'cancelled', 'timed_out'].includes(conclusion)
+  const attention = conclusion === 'action_required'
   const neutral = ['neutral', 'skipped'].includes(conclusion)
   if (failed) {
     return (
       <svg className="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    )
+  }
+  if (attention) {
+    return (
+      <svg className="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
       </svg>
     )
   }
@@ -252,13 +260,14 @@ function CiObserveResult({ output }) {
     ? 'text-emerald-400 border-emerald-400/20 bg-emerald-400/5'
     : outcome === 'failure'
     ? 'text-rose-400 border-rose-400/20 bg-rose-400/5'
-    : outcome === 'timeout'
+    : outcome === 'timeout' || outcome === 'action_required'
     ? 'text-amber-400 border-amber-400/20 bg-amber-400/5'
     : 'text-blue-400 border-blue-400/20 bg-blue-400/5'
 
   const outcomeLabel = {
     success: 'All checks passed',
-    failure: `${output.failed_count ?? checks.filter(c => ['failure','cancelled','timed_out','action_required'].includes(c.conclusion)).length} check(s) failed`,
+    failure: `${output.failed_count ?? checks.filter(c => ['failure','cancelled','timed_out'].includes(c.conclusion)).length} check(s) failed`,
+    action_required: 'Needs human action to run',
     timeout: 'Timed out waiting for checks',
     no_checks: 'No checks found',
     in_progress: 'Checks running…',
@@ -274,9 +283,9 @@ function CiObserveResult({ output }) {
           <div key={c.id ?? i} className="flex items-center gap-2 text-xs font-mono">
             <CiCheckIcon status={c.status} conclusion={c.conclusion} />
             <span className={
-              c.conclusion && ['failure','cancelled','timed_out','action_required'].includes(c.conclusion)
+              c.conclusion && ['failure','cancelled','timed_out'].includes(c.conclusion)
                 ? 'text-rose-300'
-                : c.status !== 'completed'
+                : c.conclusion === 'action_required' || c.status !== 'completed'
                 ? 'text-amber-300'
                 : 'text-text-muted'
             }>{c.name}</span>
