@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A fully agentic developer pipeline. Users submit issues through a web UI; a chain of AI agents process them in real-time across ten sequential stages (intake → coding → PR creation → QA → human escalation). Built with FastAPI + React + SQLite + Anthropic SDK.
+A fully agentic developer pipeline. Users submit issues through a web UI; a chain of AI agents process them in real-time across sequential stages (intake → coding → CI-checked PR creation → QA → human escalation). Built with FastAPI + React + SQLite + Anthropic SDK.
 
 ## Project Structure
 
@@ -99,7 +99,7 @@ WS     /ws/{issue_id}             # Real-time agent updates
 
 ## Pipeline Flow (backend/pipeline.py)
 
-Sequential 10-stage pipeline (`STAGE_ORDER`) with conditional logic:
+Sequential pipeline (`STAGE_ORDER`) with conditional logic:
 
 1. **Intake** (Haiku) → normalised issue (emits `requires_design_input`)
 2. **Assessment** (Sonnet) → technical spec (repo tree injected if a GitHub repo is attached)
@@ -110,13 +110,20 @@ Sequential 10-stage pipeline (`STAGE_ORDER`) with conditional logic:
    `coding_model_id` + `review_model_id` via a fixed table; recorded as a `skipped` step
    whose `output_data` holds the routing result
 7. **Coding** (router-selected) → implementation files (repo context fetched first)
-8. **PR Review** (router-selected) → verdict: APPROVE / REQUEST_CHANGES / COMMENT
+8. **CI Observer** → polls GitHub Actions check runs on the pushed branch
+   - **Skipped** unless `CI_OBSERVE_ENABLED`, GitHub is configured, and a branch was created
+   - On failure: fetches the failing job's actual log tail (`get_failed_job_logs`) and feeds it
+     to a coding-fix revision loop (`CI_MAX_REVISIONS`, default 5). Each revision re-pushes and
+     re-polls CI.
+   - If CI is **still red after exhausting all revisions, the whole pipeline fails** — it does
+     not proceed to PR review with a known-broken build
+9. **PR Review** (router-selected) → verdict: APPROVE / REQUEST_CHANGES / COMMENT
    - If REQUEST_CHANGES: revision loop (max 2), creates new coding + review steps
-9. **QA** (Opus, off-box in GitHub Actions) → boots the PR build and runs adversarial probes
-   - **Skipped** unless `QA_ENABLED`, PR review verdict was `APPROVE`, a GitHub branch exists,
-     and `QA_WORKFLOW_REPO` + `PUBLIC_BASE_URL` are configured
-   - If `QA_FAIL`: one coding + QA revision (`QA_MAX_REVISIONS = 1`)
-10. **Escalation** (Haiku) → human summary
+10. **QA** (Opus, off-box in GitHub Actions) → boots the PR build and runs adversarial probes
+    - **Skipped** unless `QA_ENABLED`, PR review verdict was `APPROVE`, a GitHub branch exists,
+      and `QA_WORKFLOW_REPO` + `PUBLIC_BASE_URL` are configured
+    - If `QA_FAIL`: one coding + QA revision (`QA_MAX_REVISIONS = 1`)
+11. **Escalation** (Haiku) → human summary
 
 GitHub integration (optional): after step 7, pushes to branch and creates PR (push failures are
 non-fatal and recorded in `github_error`). Revision loops update the same branch.

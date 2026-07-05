@@ -1,8 +1,12 @@
 import os
 import logging
+import requests
 from github import Github, GithubException
 
 logger = logging.getLogger(__name__)
+
+GITHUB_API = "https://api.github.com"
+MAX_LOG_CHARS = 6000
 
 
 class GitHubClient:
@@ -169,6 +173,64 @@ class GitHubClient:
                 "completed_at": cr.completed_at.isoformat() if cr.completed_at else None,
             })
         return result
+
+    def get_failed_job_logs(self, repo: str, sha: str, failed_check_names: list[str]) -> dict[str, str]:
+        """Fetch raw GitHub Actions job logs for failed checks, keyed by check name.
+
+        Check runs only expose a name/conclusion/URL — no failure output — so a
+        coding agent asked to fix a "build" failure has nothing to diagnose from.
+        This pulls the actual log tail (where the error almost always is) for
+        each failed job so a fix attempt has something real to work with.
+        Best-effort: any lookup failure just omits that check's log.
+        """
+        if not failed_check_names:
+            return {}
+        token = os.getenv("GH_TOKEN", "")
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+        logs: dict[str, str] = {}
+        remaining = set(failed_check_names)
+
+        try:
+            runs_resp = requests.get(
+                f"{GITHUB_API}/repos/{repo}/actions/runs",
+                headers=headers, params={"head_sha": sha}, timeout=15,
+            )
+            runs_resp.raise_for_status()
+            run_ids = [r["id"] for r in runs_resp.json().get("workflow_runs", [])]
+        except Exception as e:
+            logger.warning("Failed to list workflow runs for %s@%s: %s", repo, sha, e)
+            return logs
+
+        for run_id in run_ids:
+            if not remaining:
+                break
+            try:
+                jobs_resp = requests.get(
+                    f"{GITHUB_API}/repos/{repo}/actions/runs/{run_id}/jobs",
+                    headers=headers, timeout=15,
+                )
+                jobs_resp.raise_for_status()
+                jobs = jobs_resp.json().get("jobs", [])
+            except Exception as e:
+                logger.warning("Failed to list jobs for run %s: %s", run_id, e)
+                continue
+
+            for job in jobs:
+                name = job.get("name")
+                if name not in remaining:
+                    continue
+                try:
+                    log_resp = requests.get(
+                        f"{GITHUB_API}/repos/{repo}/actions/jobs/{job['id']}/logs",
+                        headers=headers, timeout=20,
+                    )
+                    log_resp.raise_for_status()
+                    logs[name] = log_resp.text[-MAX_LOG_CHARS:]
+                except Exception as e:
+                    logger.warning("Failed to fetch logs for job %s: %s", name, e)
+                remaining.discard(name)
+
+        return logs
 
     def dispatch_workflow(self, repo: str, workflow_file: str, ref: str, inputs: dict) -> None:
         """Trigger a workflow_dispatch event. PyGithub doesn't expose this directly,
