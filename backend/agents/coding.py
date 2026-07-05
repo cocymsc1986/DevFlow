@@ -34,9 +34,12 @@ to make those reproductions stop producing the defect. Keep the same branch_name
 pr_title.
 
 If you receive ci_failures in the input, those are GitHub Actions CI checks that failed on
-the PR branch. Each entry has a check name, conclusion, and URL. Diagnose the likely cause
-from the check names and your implementation, then fix the code so CI passes. Keep the same
-branch_name and pr_title.
+the PR branch. Each entry has a check name, conclusion, and URL, and where available a
+log_excerpt with the tail of the actual job output (this is where the real error almost
+always is — read it before guessing). Use the log_excerpt to pinpoint the exact failure
+(stack trace, failing assertion, lint/type error, etc.) and fix the root cause, not just the
+symptom. If no log_excerpt is available for a check, fall back to reasoning from the check
+name and your implementation. Keep the same branch_name and pr_title.
 
 Produce complete, working code including all necessary files, tests, a branch name, and a PR description.
 

@@ -169,22 +169,30 @@ flowchart TD
     coding["7 · Coding — router-selected model<br/>full implementation (files + tests)"] --> push{"GitHub configured<br/>and repo selected?"}
     push -->|yes| ghpush["push branch + open PR<br/>(non-fatal on error)"]
     push -->|no| skippush["skip push"]
-    ghpush --> prreview
-    skippush --> prreview
+    ghpush --> ciobserve
+    skippush --> ciobserve
 
-    prreview["8 · PR Review — router-selected model<br/>verdict: APPROVE / COMMENT / REQUEST_CHANGES"] --> revgate{REQUEST_CHANGES?}
+    ciobserve["8 · CI Observer<br/>poll GH Actions check runs"] --> cigate{"CI observation<br/>enabled & branch exists?"}
+    cigate -->|no| ciskip["8 · CI Observer — SKIPPED"]
+    cigate -->|"yes, success/no_checks"| prreview
+    cigate -->|"yes, failure"| ciloop["fetch failing job logs<br/>→ coding_ci_revision_N<br/>→ update branch → re-poll CI<br/>(≤ CI_MAX_REVISIONS, default 5)"]
+    ciloop -->|CI green| prreview
+    ciloop -->|"still red after all revisions"| cifail([FAIL: CI never went green])
+    ciskip --> prreview
+
+    prreview["9 · PR Review — router-selected model<br/>verdict: APPROVE / COMMENT / REQUEST_CHANGES"] --> revgate{REQUEST_CHANGES?}
     revgate -->|"yes (≤ 2 revisions)"| revloop["coding_revision_N → update branch<br/>→ pr_review_revision_N"]
     revloop --> revgate
     revgate -->|no| qa
 
-    qa["9 · QA Agent — off-box (GH Actions)<br/>boots app, adversarial probes"] --> qagate{"QA enabled & APPROVE<br/>& branch & configured?"}
-    qagate -->|no| qaskip["9 · QA — SKIPPED"]
+    qa["10 · QA Agent — off-box (GH Actions)<br/>boots app, adversarial probes"] --> qagate{"QA enabled & APPROVE<br/>& branch & configured?"}
+    qagate -->|no| qaskip["10 · QA — SKIPPED"]
     qagate -->|"yes, QA_FAIL"| qaloop["coding_qa_revision → re-dispatch QA<br/>(≤ 1 revision)"]
     qaloop --> escalation
     qaskip --> escalation
     qa --> escalation
 
-    escalation["10 · Escalation — Haiku<br/>human-readable summary"] --> done([Issue → awaiting_review])
+    escalation["11 · Escalation — Haiku<br/>human-readable summary"] --> done([Issue → awaiting_review])
 ```
 
 ### Stage notes
@@ -198,9 +206,10 @@ flowchart TD
 | 5 | **Sizing** | Haiku | Complexity estimate `XS…XL`. |
 | 6 | **Model Router** | *deterministic* | Not an LLM. `_resolve_models(size)` maps size → `(coding_model, review_model)` via a fixed routing table (Haiku/Sonnet/Opus by tier). Recorded as a `skipped` step that stores the routing result. |
 | 7 | **Coding** | router-selected | Full implementation. Repo context (orientation files + spec's `key_files_to_read`) is fetched first. On success, pushes a branch and opens a PR (failures here are non-fatal and recorded in `github_error`). |
-| 8 | **PR Review** | router-selected | Verdict `APPROVE` / `COMMENT` / `REQUEST_CHANGES`. On `REQUEST_CHANGES`, a revision loop (max 2) re-runs coding → updates the branch → re-reviews. |
-| 9 | **QA** | Opus (off-box) | Dispatches `qa.yml`, awaits an async callback with the verdict. Skipped unless `QA_ENABLED`, PR review was `APPROVE`, a branch exists, and QA env vars are set. `QA_FAIL` triggers one coding+QA revision. See [§6](#6-qa-off-box-execution). |
-| 10 | **Escalation** | Haiku | Human-readable wrap-up summary. |
+| 8 | **CI Observer** | router-selected (fix loop) | Polls GitHub Actions check runs on the pushed branch. Skipped unless `CI_OBSERVE_ENABLED`, GitHub is configured, and a branch exists. On failure, fetches the failing job's log tail and runs a coding-fix + re-poll loop (`CI_MAX_REVISIONS`, default 5). **If CI is still red once the loop is exhausted, the pipeline fails outright** — it will not hand a known-broken build to PR review. |
+| 9 | **PR Review** | router-selected | Verdict `APPROVE` / `COMMENT` / `REQUEST_CHANGES`. On `REQUEST_CHANGES`, a revision loop (max 2) re-runs coding → updates the branch → re-reviews. |
+| 10 | **QA** | Opus (off-box) | Dispatches `qa.yml`, awaits an async callback with the verdict. Skipped unless `QA_ENABLED`, PR review was `APPROVE`, a branch exists, and QA env vars are set. `QA_FAIL` triggers one coding+QA revision. See [§6](#6-qa-off-box-execution). |
+| 11 | **Escalation** | Haiku | Human-readable wrap-up summary. |
 
 On success the run is `completed` and the issue moves to `awaiting_review`; Langfuse receives the
 final trace, scores (correctness/quality/security/etc. from PR review, plus QA verdict), and tags.

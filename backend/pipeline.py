@@ -91,7 +91,7 @@ CI_OBSERVE_POLL_INTERVAL = int(os.getenv("CI_OBSERVE_POLL_SECONDS", "15"))
 # has no CI. GitHub Actions can take a while to create queued check runs after a
 # push, so this must be comfortably longer than a single poll interval.
 CI_OBSERVE_START_GRACE = int(os.getenv("CI_OBSERVE_START_GRACE_SECONDS", "75"))
-CI_MAX_REVISIONS = int(os.getenv("CI_MAX_REVISIONS", "1"))
+CI_MAX_REVISIONS = int(os.getenv("CI_MAX_REVISIONS", "5"))
 # Conclusions that mean the build is broken and a code fix is warranted.
 _CI_FAILURE_CONCLUSIONS = {"failure", "cancelled", "timed_out"}
 # Conclusions that mean a human needs to act (e.g. approve a workflow run). A
@@ -463,7 +463,14 @@ class Pipeline:
 
         if outcome == "failure":
             context["ci_failures"] = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
-            await self._run_ci_revision_loop(issue_id, run, issue, context)
+            await self._attach_ci_logs(issue.github_repo, issue.github_branch, context["ci_failures"])
+            resolved = await self._run_ci_revision_loop(issue_id, run, issue, context)
+            if not resolved:
+                await self._fail_pipeline(
+                    run, issue, issue_id,
+                    f"CI still failing after {CI_MAX_REVISIONS} fix attempt(s) — pipeline stopped",
+                )
+                return False
 
         return True
 
@@ -475,6 +482,23 @@ class Pipeline:
                 1 for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS
             )
         return result_output
+
+    async def _attach_ci_logs(self, repo: str, branch: str, failures: list[dict]) -> None:
+        """Best-effort: attach a `log_excerpt` to each failing check so the coding
+        agent has actual build output to diagnose, not just a check name."""
+        if not failures:
+            return
+        try:
+            sha = await asyncio.to_thread(self.github.get_branch_head_sha, repo, branch)
+            names = [f["name"] for f in failures if f.get("name")]
+            logs = await asyncio.to_thread(self.github.get_failed_job_logs, repo, sha, names)
+        except Exception as e:
+            logger.warning("Failed to fetch CI failure logs (non-fatal): %s", e)
+            return
+        for f in failures:
+            excerpt = logs.get(f.get("name"))
+            if excerpt:
+                f["log_excerpt"] = excerpt
 
     async def _poll_ci_checks(
         self, issue_id: int, step: AgentStep, repo: str, branch: str,
@@ -539,7 +563,13 @@ class Pipeline:
 
     async def _run_ci_revision_loop(
         self, issue_id: int, run: PipelineRun, issue: Issue, context: dict,
-    ) -> None:
+    ) -> bool:
+        """Attempt up to CI_MAX_REVISIONS coding fixes for a failing build.
+
+        Returns True once CI goes green, False if it's still broken (or
+        inconclusive) once the fix budget is exhausted — the caller fails
+        the whole pipeline in that case rather than proceeding to PR review.
+        """
         router_output = context.get("router") or {}
         coding_model = router_output.get("coding_model_id", "claude-sonnet-4-6")
 
@@ -602,6 +632,7 @@ class Pipeline:
             if outcome == "failure":
                 # A fresh, fully-completed failing run — keep iterating with the new failures.
                 context["ci_failures"] = [c for c in checks if c.get("conclusion") in _CI_FAILURE_CONCLUSIONS]
+                await self._attach_ci_logs(issue.github_repo, issue.github_branch, context["ci_failures"])
                 continue
             # no_checks / timeout / action_required after a push are *inconclusive*:
             # CI either didn't run again or needs a human. Don't claim success — stop
@@ -609,13 +640,9 @@ class Pipeline:
             logger.info("CI revision %d ended inconclusive (%s) for branch %s", revision, outcome, issue.github_branch)
             break
 
-        # Whatever happened, the dedicated CI loop has had its turn. Clear ci_failures
-        # so they don't bleed into PR-review-driven coding revisions, but record an
-        # unresolved marker (non-blocking) so the PR review and UI can flag red CI.
-        if not resolved and context.get("ci_failures"):
-            context["ci_unresolved"] = context["ci_failures"]
+        if not resolved:
             logger.warning(
-                "CI still failing after %d revision(s) for branch %s — proceeding to PR review with CI flagged unresolved",
+                "CI still failing after %d revision(s) for branch %s — failing the pipeline",
                 revision, issue.github_branch,
             )
         context.pop("ci_failures", None)
@@ -624,6 +651,8 @@ class Pipeline:
         # revision steps so the UI timeline reads top-to-bottom.
         if revision > 0:
             self._renumber_trailing_steps(run, ["pr_review", "qa", "escalation"], next_step_num)
+
+        return resolved
 
     def _renumber_trailing_steps(self, run: PipelineRun, agent_names: list[str], start_num: int) -> None:
         by_name = {s.agent_name: s for s in run.agent_steps}
